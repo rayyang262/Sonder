@@ -21,11 +21,12 @@
   --danger: var(--accent);
 }
 
-/* Discovery stays on a dark "night sky" canvas — scope light text there. */
+/* Discovery now matches the editorial cream palette — keep var aliases pointing
+   at the same ink tokens so overlay text stays readable. */
 #discWrap {
-  --text: #e8e8f5;
-  --text-dim: #9a9ab3;
-  --border: #2a2c44;
+  --text: var(--ink);
+  --text-dim: var(--ink-dim);
+  --border: var(--line);
 }
 
 * { box-sizing: border-box; }
@@ -449,13 +450,461 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
   .feed-content {
     padding-left: 1.5rem;
     padding-right: 1.5rem;
-    padding-top: calc(var(--vinyl-size) * 0.45);  /* push content below vinyl on mobile */
+    padding-top: calc(var(--vinyl-size) * 0.45);
   }
-  .vinyl-wrap {
-    top: 0;
-    transform: none;
-  }
+  .vinyl-wrap { top: 0; transform: none; }
   .vinyl-time { left: 1.5rem; bottom: auto; top: calc(var(--vinyl-size) * 0.42); }
   .feed-header { flex-direction: column; gap: 1rem; }
   .feed-header .right { text-align: left; }
 }
+
+/* ============================================================================
+   PLUS-1 RESONANCE BUTTON
+============================================================================ */
+.plus1 {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-transform: uppercase;
+}
+.plus1 .plus { font-weight: 700; font-size: 0.95rem; line-height: 1; }
+.plus1 .count { min-width: 1.2rem; text-align: center; }
+.plus1:hover { color: var(--ink); border-color: var(--ink); }
+.plus1.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-elev);
+}
+.plus1.on:hover { background: var(--ink); border-color: var(--ink); }
+.plus1.large {
+  padding: 0.6rem 1.1rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.2em;
+  margin-top: 1.5rem;
+}
+.resonance-bar { display: flex; gap: 1rem; align-items: center; }
+
+/* ============================================================================
+   ONBOARDING
+============================================================================ */
+.onboard {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 2rem 0;
+}
+.onboard-head { text-align: center; margin-bottom: 3rem; }
+.onboard-head .mini {
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 0.4em;
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  margin-bottom: 0.5rem;
+}
+.onboard-head h1 { font-size: 4.5rem; line-height: 1; letter-spacing: -0.04em; }
+.onboard-head p {
+  color: var(--ink-dim);
+  font-size: 1.05rem;
+  max-width: 32rem;
+  margin: 1rem auto 0;
+}
+.onboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  margin-bottom: 2.5rem;
+}
+.onboard-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  position: relative;
+}
+.onboard-card .num {
+  position: absolute;
+  top: 1rem; right: 1.25rem;
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+}
+.onboard-card .ttl {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.4rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 0.75rem;
+}
+.onboard-card p {
+  color: var(--ink-dim);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 0;
+}
+.onboard-cta { text-align: center; }
+.onboard-cta button { font-size: 0.95rem; letter-spacing: 0.25em; padding: 1rem 2.5rem; }
+
+@media (max-width: 720px) {
+  .onboard-grid { grid-template-columns: 1fr; }
+  .onboard-head h1 { font-size: 3rem; }
+}
+
+/* ============================================================================
+   DISCOVERY (cream-bg restyle, cluster labels, friends picker)
+============================================================================ */
+.disc-wrap {
+  position: fixed;
+  inset: 60px 0 0 0;
+  background: var(--bg);
+  overflow: hidden;
+}
+.disc-canvas { position: absolute; inset: 0; }
+
+.disc-overlay {
+  position: absolute;
+  top: 1rem; left: 1rem;
+  display: flex; flex-direction: column; gap: 0.6rem;
+  z-index: 2;
+  max-width: 360px;
+}
+.disc-toggle-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.disc-status { color: var(--ink-dim); font-size: 0.78rem; margin-left: 0.25rem; }
+
+.disc-explain {
+  background: rgba(246, 243, 236, 0.92);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.85rem;
+  color: var(--ink-dim);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  backdrop-filter: blur(8px);
+}
+.disc-explain b { color: var(--ink); }
+
+.disc-friends {
+  background: rgba(246, 243, 236, 0.92);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.85rem;
+  font-size: 0.82rem;
+  max-height: 280px;
+  overflow-y: auto;
+  backdrop-filter: blur(8px);
+}
+.disc-friends-head {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+  color: var(--ink-soft);
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+}
+.disc-friend {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.3rem 0;
+  cursor: pointer;
+}
+.disc-friend input { width: auto; margin: 0; }
+.disc-friends-empty { color: var(--ink-dim); }
+.disc-friends-empty a { color: var(--accent); }
+
+.disc-legend {
+  position: absolute;
+  top: 1rem; right: 1rem;
+  z-index: 2;
+  background: rgba(246, 243, 236, 0.92);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem;
+  font-size: 0.78rem;
+  color: var(--ink-dim);
+  line-height: 1.7;
+  backdrop-filter: blur(8px);
+}
+.disc-legend .dot {
+  display: inline-block; width: 11px; height: 11px;
+  border-radius: 50%; vertical-align: middle; margin-right: 6px;
+}
+.disc-legend .dot.mine  { background: #d94f3c; box-shadow: 0 0 6px rgba(217,79,60,0.5); }
+.disc-legend .dot.other { background: #222; }
+.disc-legend .dot.halo  { background: transparent; border: 2px solid #c89a2e; width: 13px; height: 13px; }
+
+.disc-hint {
+  position: absolute;
+  bottom: 1rem; left: 1rem;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  z-index: 2;
+}
+.disc-hint b { color: var(--accent); font-weight: 600; }
+
+.disc-tip {
+  position: absolute;
+  pointer-events: none;
+  display: none;
+  background: rgba(246, 243, 236, 0.97);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  padding: 0.6rem;
+  z-index: 3;
+  width: 240px;
+  font-size: 0.82rem;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+}
+.disc-tip img { width: 100%; border-radius: 3px; margin-bottom: 0.4rem; display: block; }
+.disc-tip .tip-song { font-family: var(--font-display); font-weight: 600; color: var(--ink); }
+.disc-tip .tip-artist { color: var(--ink-dim); }
+.disc-tip .tip-author { color: var(--ink-soft); margin-top: 0.3rem; font-size: 0.75rem; }
+.disc-tip .tip-feelings {
+  margin-top: 0.4rem;
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  text-transform: lowercase;
+}
+
+/* Cluster labels float above the canvas, projected from 3D each frame */
+.disc-labels { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.cluster-label {
+  position: absolute;
+  pointer-events: auto;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  background: var(--ink);
+  color: var(--bg-elev);
+  padding: 0.32rem 0.65rem 0.32rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.cluster-label:hover { background: var(--accent); color: var(--bg-elev); }
+.cluster-label .cluster-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.cluster-label:hover .cluster-dot { background: var(--bg-elev); }
+
+/* ============================================================================
+   FEELING ROOM (chat + grid)
+============================================================================ */
+.room-page {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+.room-songs .mini, .room-chat .mini {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.room-title { font-size: 4rem; line-height: 1; margin: 0.4rem 0 0.5rem; }
+.room-sub { color: var(--ink-dim); margin-bottom: 1.5rem; }
+
+.room-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.room-card {
+  display: flex; gap: 0.75rem; align-items: center;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  text-decoration: none;
+  color: var(--ink);
+  transition: border-color 0.15s;
+}
+.room-card:hover { border-color: var(--ink); }
+.room-card img, .room-card .ph {
+  width: 56px; height: 56px;
+  border-radius: 3px;
+  background: var(--bg);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.room-card-info { min-width: 0; }
+.room-card .song {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.room-card .artist { color: var(--ink-dim); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.room-card .author { color: var(--ink-soft); font-size: 0.72rem; margin-top: 0.2rem; }
+
+.room-chat {
+  position: sticky;
+  top: 80px;
+  align-self: start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem;
+  height: calc(100vh - 120px);
+  display: flex;
+  flex-direction: column;
+}
+.room-messages {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0.75rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-right: 0.25rem;
+}
+.room-msg {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  align-self: flex-start;
+  max-width: 85%;
+}
+.room-msg.mine { align-self: flex-end; background: var(--ink); color: var(--bg-elev); border-color: var(--ink); }
+.room-msg .who {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  margin-bottom: 0.2rem;
+}
+.room-msg.mine .who { color: var(--bg); opacity: 0.7; }
+.room-msg .text { font-size: 0.92rem; line-height: 1.4; word-wrap: break-word; }
+
+.room-form { display: flex; gap: 0.5rem; }
+.room-form input { flex: 1; margin: 0; }
+.room-form button { white-space: nowrap; }
+
+@media (max-width: 860px) {
+  .room-page { grid-template-columns: 1fr; }
+  .room-chat { position: relative; top: 0; height: 60vh; }
+  .room-title { font-size: 2.5rem; }
+}
+
+/* ============================================================================
+   MEMORY DETAIL
+============================================================================ */
+.memory-page { max-width: 760px; }
+.memory-photo {
+  width: 100%;
+  max-height: 480px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  margin-top: 1rem;
+}
+.feeling-tags {
+  display: flex; flex-wrap: wrap; gap: 0.4rem;
+  margin: 1.25rem 0 0;
+}
+.feeling-tag {
+  font-family: var(--font-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  text-decoration: none;
+  transition: all 0.15s;
+}
+.feeling-tag:hover { background: var(--accent); color: var(--bg-elev); border-color: var(--accent); }
+
+/* ============================================================================
+   PHOTO UPLOAD ON LOG
+============================================================================ */
+.photo-row { display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; }
+.photo-row input[type=file] {
+  background: transparent;
+  border: 1px dashed var(--line);
+  padding: 0.6rem;
+  width: auto;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+  cursor: pointer;
+}
+.photo-preview {
+  width: 80px;
+  height: 80px;
+  border-radius: var(--radius);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.photo-preview img { width: 100%; height: 100%; object-fit: cover; }
+
+/* ============================================================================
+   PROFILE — friends, find users, archive
+============================================================================ */
+.user-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+  gap: 0.75rem;
+}
+.user-row:last-child { border-bottom: none; }
+.user-row .song { font-family: var(--font-display); font-weight: 600; font-size: 0.95rem; }
+.user-row button { padding: 0.4rem 0.9rem; font-size: 0.72rem; }
+
+.archive-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0.75rem;
+}
+.archive-card {
+  display: flex; gap: 0.75rem; align-items: center;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  text-decoration: none;
+  color: var(--ink);
+  transition: border-color 0.15s;
+}
+.archive-card:hover { border-color: var(--ink); }
+.archive-card img, .archive-card .ph {
+  width: 52px; height: 52px;
+  border-radius: 3px;
+  background: var(--bg);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.archive-card .info { min-width: 0; }
+.archive-card .song { font-family: var(--font-display); font-weight: 600; font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.archive-card .artist { color: var(--ink-dim); font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.archive-card .meta { color: var(--ink-soft); font-size: 0.7rem; margin-top: 0.2rem; }

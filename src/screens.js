@@ -2,29 +2,36 @@
 //  SONDER — ALL SCREENS
 // ============================================================================
 //  Use ctrl-F (cmd-F) to jump to a section:
-//     [LOGIN]      sign in / sign up
-//     [FEED]       your own memories
-//     [LOG]        log a new memory (Spotify search + form)
-//     [MEMORY]     single memory detail + comments
-//     [DISCOVERY]  Three.js constellation
-//     [PROFILE]    account info + sign out
+//     [LOGIN]        sign in / sign up
+//     [ONBOARDING]   first-login walkthrough
+//     [FEED]         all memories ranked by resonance + recency
+//     [LOG]          log a new memory (Spotify search + Replicate feelings + photo)
+//     [MEMORY]       single memory detail + comments + +1 resonance
+//     [DISCOVERY]    Three.js constellation (Sound / Social-by-feeling / Me & Friends)
+//     [ROOM]         feeling-room: live chat + grid of same-feeling memories
+//     [PROFILE]      account + friends + curated archive
 // ============================================================================
 
 import {
   auth, logout,
   signInEmail, signUpEmail, signInGoogle,
-  createMemory, getMyMemories, getMemory, getPublicMemories, getFeedMemories,
-  addComment, getComments
+  createMemory, getMyMemories, getMemoriesByUid, getMemory, getPublicMemories, getFeedMemories,
+  addComment, getComments,
+  toggleResonance, updateMemoryFeelings,
+  ensureUserDoc, getUserDoc, getAllUsers, markOnboarded,
+  sendFriendRequest, getIncomingRequests, getOutgoingRequests,
+  acceptFriendRequest, rejectFriendRequest, unfriend, getMyFriends,
+  subscribeRoomMessages, postRoomMessage
 } from './firebase.js';
 import { searchTracks, startLogin, isConnected, disconnect } from './spotify.js';
 import { fetchPreview } from './preview.js';
+import { extractFeelings } from './replicate.js';
 import { navigate } from './main.js';
 import { seedAll } from './seed.js';
+import { computeLayouts, computeFriendsLayout } from './umap.js';
 import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// ----------------------------------------------------------------------------
-// shared helper — escape user-provided strings before injecting into HTML
-// ----------------------------------------------------------------------------
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -78,11 +85,56 @@ export function renderLogin(root) {
 
 
 // ============================================================================
-//  [FEED]  your own memories + everyone else's public ones, newest first
+//  [ONBOARDING]  first-login walkthrough — 4 cards explain the app
+// ============================================================================
+export function renderOnboarding(root) {
+  root.innerHTML = `
+    <div class="onboard">
+      <div class="onboard-head">
+        <div class="mini">WELCOME TO</div>
+        <h1>SONDER</h1>
+        <p>A music memory archive. Songs pin to moments. Moments pin to people.</p>
+      </div>
+      <div class="onboard-grid">
+        <div class="onboard-card">
+          <div class="num">01</div>
+          <div class="ttl">DISCOVERY</div>
+          <p>A 3D constellation of every memory on Sonder. Drag to orbit, hover to preview, click a star to read its story. Switch between <b>Sound</b> (clusters by genre) and <b>Social</b> (clusters by the feeling behind the memory).</p>
+        </div>
+        <div class="onboard-card">
+          <div class="num">02</div>
+          <div class="ttl">FEED</div>
+          <p>Every memory in one place, ranked by resonance. Hover a row to spin the vinyl and stream a preview. <b>+1</b> the ones that hit.</p>
+        </div>
+        <div class="onboard-card">
+          <div class="num">03</div>
+          <div class="ttl">LOG</div>
+          <p>Search a song, write what was happening, drop a photo. We use AI to read the feelings in your note and place your memory in the right cluster on Discovery.</p>
+        </div>
+        <div class="onboard-card">
+          <div class="num">04</div>
+          <div class="ttl">PROFILE</div>
+          <p>Your curated archive. Add friends to compare taste in a private <b>Me &amp; Friends</b> view, see who's resonated with you, and manage your account.</p>
+        </div>
+      </div>
+      <div class="onboard-cta">
+        <button id="onboardDone">Enter Sonder</button>
+      </div>
+    </div>
+  `;
+  root.querySelector('#onboardDone').onclick = async () => {
+    try { await markOnboarded(); } catch (e) { console.warn('onboard mark failed', e); }
+    // Reload via hash so main.js refetches the user doc.
+    window.location.hash = '/';
+    window.location.reload();
+  };
+}
+
+
+// ============================================================================
+//  [FEED]  ranked by resonance, then recency
 // ============================================================================
 export async function renderFeed(root) {
-  // full-bleed: break out of #app's max-width so the vinyl can hang off
-  // the left viewport edge
   root.style.maxWidth = 'none';
   root.style.padding  = '0';
 
@@ -106,8 +158,8 @@ export async function renderFeed(root) {
             <div class="sub">Sonder · music memories</div>
           </div>
           <div class="right">
-            <div class="mini">SONDER</div>
-            <div class="sub">Music streaming</div>
+            <div class="mini">RANKED BY RESONANCE</div>
+            <div class="sub">+1 the ones that hit</div>
           </div>
         </div>
 
@@ -161,22 +213,42 @@ export async function renderFeed(root) {
     return;
   }
 
-  // Render up to 8 rows; overflow summarised in view-more.
-  const SHOWN = Math.min(8, memories.length);
+  const SHOWN = Math.min(12, memories.length);
   list.innerHTML = memories.slice(0, SHOWN).map((m, i) => trackRow(m, i, currentUid)).join('');
   viewMore.textContent = memories.length > SHOWN ? `— ${memories.length - SHOWN} more` : '';
 
-  // Focus the first row by default so the page isn't empty on load.
   setFocus(memories[0], 0, { autoplay: false });
 
-  // Wire hover → focus/preview, click → open memory.
   list.querySelectorAll('.track').forEach((row) => {
     const idx = Number(row.dataset.idx);
     row.addEventListener('mouseenter', () => setFocus(memories[idx], idx, { autoplay: true }));
-    row.addEventListener('click', () => navigate(`/memory/${memories[idx].id}`));
+    row.addEventListener('click', (ev) => {
+      // Plus-1 button shouldn't navigate.
+      if (ev.target.closest('.plus1')) return;
+      navigate(`/memory/${memories[idx].id}`);
+    });
   });
-  // Stop preview when cursor leaves the list entirely.
   list.addEventListener('mouseleave', () => stopPreview());
+
+  // Wire +1 buttons.
+  list.querySelectorAll('.plus1').forEach((btn) => {
+    btn.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const idx = Number(btn.dataset.idx);
+      const m = memories[idx];
+      btn.disabled = true;
+      try {
+        const { resonance, resonated } = await toggleResonance(m.id);
+        m.resonance = resonance;
+        m.resonators = resonated
+          ? [...(m.resonators || []), currentUid]
+          : (m.resonators || []).filter((u) => u !== currentUid);
+        btn.classList.toggle('on', resonated);
+        btn.querySelector('.count').textContent = resonance;
+      } catch (e) { console.warn('resonance:', e); }
+      btn.disabled = false;
+    });
+  });
 
   function setFocus(m, idx, { autoplay }) {
     list.querySelectorAll('.track').forEach((r) => r.classList.toggle('active', Number(r.dataset.idx) === idx));
@@ -187,15 +259,12 @@ export async function renderFeed(root) {
     focusSub.innerHTML   = `${esc(song).toUpperCase()} · ${m.date ? new Date(m.date).toLocaleDateString() : ''}`;
     focusMini.textContent = (m.uid === currentUid ? 'YOUR MEMORY' : `FROM ${(m.authorName || m.authorEmail || 'someone').toUpperCase()}`);
 
-    // Swap label art + trigger spin-kick animation so the record visibly
-    // "re-drops" each time a new song is focused.
     if (m.song?.albumArt) {
       vinylLabel.innerHTML = `<img src="${esc(m.song.albumArt)}" alt="" />`;
     } else {
       vinylLabel.innerHTML = `<span class="label-text">${esc(song).slice(0, 12).toUpperCase()}</span>`;
     }
     vinyl.classList.remove('kick');
-    // force reflow to restart animation
     void vinyl.offsetWidth;
     vinyl.classList.add('kick');
 
@@ -208,33 +277,17 @@ export async function renderFeed(root) {
     currentAudioId = m.id;
     vinylTime.textContent = 'LOADING…';
     let url;
-    try {
-      url = await fetchPreview(m.song);
-    } catch (e) {
-      console.warn('[preview] fetch failed:', e);
-      vinylTime.textContent = 'LOOKUP FAILED';
-      return;
-    }
-    if (currentAudioId !== m.id) return;  // user moved on while fetching
-    if (!url) {
-      console.log('[preview] no URL found for:', m.song?.name, m.song?.artists);
-      vinylTime.textContent = 'NO PREVIEW';
-      vinyl.classList.remove('playing');
-      return;
-    }
-    console.log('[preview] playing:', m.song?.name, '→', url);
+    try { url = await fetchPreview(m.song); }
+    catch { vinylTime.textContent = 'LOOKUP FAILED'; return; }
+    if (currentAudioId !== m.id) return;
+    if (!url) { vinylTime.textContent = 'NO PREVIEW'; vinyl.classList.remove('playing'); return; }
     audioEl.src = url;
     audioEl.currentTime = 0;
     try {
       await audioEl.play();
       vinyl.classList.add('playing');
     } catch (e) {
-      console.warn('[preview] play() rejected:', e.name, e.message);
-      if (e.name === 'NotAllowedError') {
-        vinylTime.textContent = 'CLICK ANYWHERE TO ENABLE';
-      } else {
-        vinylTime.textContent = 'PLAY FAILED';
-      }
+      vinylTime.textContent = e.name === 'NotAllowedError' ? 'CLICK ANYWHERE TO ENABLE' : 'PLAY FAILED';
       vinyl.classList.remove('playing');
     }
   }
@@ -263,6 +316,8 @@ function trackRow(m, i, currentUid) {
   const thumb = m.song?.albumArt
     ? `<img class="thumb" src="${esc(m.song.albumArt)}" alt="" />`
     : `<div class="thumb"></div>`;
+  const resonance = m.resonance ?? 0;
+  const resonated = (m.resonators || []).includes(currentUid);
   return `
     <div class="track" data-idx="${i}">
       <div class="num">${num}</div>
@@ -271,18 +326,23 @@ function trackRow(m, i, currentUid) {
         <div class="song">${esc(m.song?.name || 'Untitled')}</div>
         <div class="artist">${esc(artists)}</div>
       </div>
+      <button class="plus1 ${resonated ? 'on' : ''}" data-idx="${i}" title="Resonate">
+        <span class="plus">+</span><span class="count">${resonance}</span>
+      </button>
       <div class="meta">${esc(author)}</div>
     </div>`;
 }
 
 
 // ============================================================================
-//  [LOG]  log a new memory (Spotify search + form)
+//  [LOG]  log a new memory (Spotify search + form + AI feelings + photo)
 // ============================================================================
 let selectedSong = null;
+let selectedPhoto = null;   // base64 data URL or null
 
 export function renderLog(root) {
   selectedSong = null;
+  selectedPhoto = null;
   root.innerHTML = `
     <h1>Log a memory</h1>
 
@@ -300,9 +360,18 @@ export function renderLog(root) {
 
     <div class="card">
       <label>The memory</label>
-      <textarea id="note" placeholder="What was happening? Who was there?"></textarea>
+      <textarea id="note" placeholder="What was happening? Who was there? How did it feel?"></textarea>
+      <div class="meta" style="font-size: 0.7rem; color: var(--ink-soft);">
+        We'll read this with AI to extract the feelings and place this memory in the right cluster on Discovery.
+      </div>
 
-      <label>Where</label>
+      <label style="margin-top: 1rem;">Photo (optional)</label>
+      <div class="photo-row">
+        <input id="photo" type="file" accept="image/*" capture="environment" />
+        <div id="photoPreview" class="photo-preview"></div>
+      </div>
+
+      <label style="margin-top: 1rem;">Where</label>
       <input id="location" type="text" placeholder="City, place, room — anything" />
 
       <label>When</label>
@@ -314,18 +383,33 @@ export function renderLog(root) {
       </div>
 
       <div id="err" class="error"></div>
+      <div id="status" class="meta" style="margin-bottom: 0.5rem;"></div>
       <button id="save">Save memory</button>
     </div>
   `;
 
-  // default date = today
   root.querySelector('#date').value = new Date().toISOString().slice(0, 10);
 
-  // Spotify connect button (if not connected)
   const connectBtn = root.querySelector('#connectSpotify');
-  if (connectBtn) {
-    connectBtn.onclick = () => startLogin();
-  }
+  if (connectBtn) connectBtn.onclick = () => startLogin();
+
+  // Photo upload — resize client-side to a 768px JPEG @ 0.7 quality and store
+  // as base64 data URL on the memory doc. Stays under Firestore's 1MB doc cap
+  // (typically ~50–120KB) and avoids needing Firebase Storage (Blaze tier only).
+  const photoInput = root.querySelector('#photo');
+  const photoPreview = root.querySelector('#photoPreview');
+  photoInput.onchange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) { selectedPhoto = null; photoPreview.innerHTML = ''; return; }
+    try {
+      selectedPhoto = await resizeImageToDataURL(file, 768, 0.7);
+      photoPreview.innerHTML = `<img src="${selectedPhoto}" alt="" />`;
+    } catch (err) {
+      console.warn('photo resize failed:', err);
+      selectedPhoto = null;
+      photoPreview.innerHTML = `<div class="error">Couldn't read that image.</div>`;
+    }
+  };
 
   // debounced spotify search
   let timer;
@@ -363,30 +447,68 @@ export function renderLog(root) {
     }, 300);
   };
 
-  // save memory
   root.querySelector('#save').onclick = async () => {
     const err = root.querySelector('#err');
+    const status = root.querySelector('#status');
     err.textContent = '';
     if (!selectedSong) { err.textContent = 'Pick a song first.'; return; }
+    const note = root.querySelector('#note').value.trim();
+
+    const saveBtn = root.querySelector('#save');
+    saveBtn.disabled = true;
     try {
+      // Extract feelings from the note (best-effort — empty array on failure).
+      let feelings = [];
+      if (note) {
+        status.textContent = 'Reading feelings…';
+        try { feelings = await extractFeelings(note); }
+        catch (e) { console.warn('feelings extract failed:', e); }
+      }
+      status.textContent = 'Saving memory…';
       await createMemory({
         song: selectedSong,
-        note: root.querySelector('#note').value.trim(),
+        note,
         location: root.querySelector('#location').value.trim(),
-        photoUrl: null, // photo upload comes later
+        photoUrl: selectedPhoto,
         date: root.querySelector('#date').value,
-        isPublic: root.querySelector('#isPublic').checked
+        isPublic: root.querySelector('#isPublic').checked,
+        feelings
       });
       navigate('/');
     } catch (e) {
       err.textContent = e.message;
+      saveBtn.disabled = false;
+      status.textContent = '';
     }
   };
 }
 
+// Resize an uploaded image file to maxDim px (longest side) and return JPEG data URL.
+function resizeImageToDataURL(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) { height = (height * maxDim) / width; width = maxDim; }
+        else if (height > maxDim)              { width  = (width  * maxDim) / height; height = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 
 // ============================================================================
-//  [MEMORY]  single memory detail + comments
+//  [MEMORY]  single memory detail + comments + +1 resonance
 // ============================================================================
 export async function renderMemory(root, id) {
   if (!id) { root.innerHTML = `<div class="empty">No memory selected.</div>`; return; }
@@ -398,23 +520,45 @@ export async function renderMemory(root, id) {
 
     const artists = m.song?.artists?.join(', ') || '';
     const date = m.date ? new Date(m.date).toLocaleDateString() : '';
+    const myUid = auth.currentUser?.uid;
+    const resonated = (m.resonators || []).includes(myUid);
+    const feelings = (m.feelings || []);
 
     root.innerHTML = `
       <a href="#/" style="color: var(--text-dim);">← back</a>
-      <h1 style="margin-top: 1rem;">${esc(m.song?.name || 'Untitled')}</h1>
-      <div class="meta" style="margin-bottom: 1rem;">
-        ${esc(artists)} · ${date} · ${esc(m.location || 'somewhere')}
-      </div>
-      ${m.note ? `<p style="font-style: italic; color: var(--text-dim);">"${esc(m.note)}"</p>` : ''}
+      <div class="memory-page">
+        ${m.photoUrl ? `<img class="memory-photo" src="${esc(m.photoUrl)}" alt="" />` : ''}
+        ${m.song?.albumArt && !m.photoUrl ? `<img class="memory-photo" src="${esc(m.song.albumArt)}" alt="" />` : ''}
 
-      ${m.isPublic ? `
-        <h2 style="margin-top: 2rem;">Comments</h2>
-        <div id="comments">Loading…</div>
-        <div class="card" style="margin-top: 1rem;">
-          <textarea id="commentText" placeholder="Say something…"></textarea>
-          <button id="postComment">Post</button>
+        <h1 style="margin-top: 1rem;">${esc(m.song?.name || 'Untitled')}</h1>
+        <div class="meta" style="margin-bottom: 1rem;">
+          ${esc(artists)} · ${date} · ${esc(m.location || 'somewhere')}
         </div>
-      ` : `<p class="empty">Private memory · only visible to you.</p>`}
+
+        ${m.note ? `<p style="font-style: italic; color: var(--text-dim); font-size: 1.05rem; line-height: 1.5;">"${esc(m.note)}"</p>` : ''}
+
+        ${feelings.length ? `
+          <div class="feeling-tags">
+            ${feelings.map((f) => `<a class="feeling-tag" href="#/room/${encodeURIComponent(f)}">${esc(f)}</a>`).join('')}
+          </div>` : ''}
+
+        ${m.isPublic ? `
+          <div class="resonance-bar">
+            <button id="plus1Btn" class="plus1 large ${resonated ? 'on' : ''}">
+              <span class="plus">+</span>
+              <span>RESONATE</span>
+              <span class="count">${m.resonance ?? 0}</span>
+            </button>
+          </div>
+
+          <h2 style="margin-top: 2rem;">Comments</h2>
+          <div id="comments">Loading…</div>
+          <div class="card" style="margin-top: 1rem;">
+            <textarea id="commentText" placeholder="Say something…"></textarea>
+            <button id="postComment">Post</button>
+          </div>
+        ` : `<p class="empty">Private memory · only visible to you.</p>`}
+      </div>
     `;
 
     if (m.isPublic) {
@@ -425,7 +569,7 @@ export async function renderMemory(root, id) {
           ? `<div class="empty">No comments yet.</div>`
           : comments.map((c) => `
               <div class="card">
-                <div class="meta">${esc(c.email || 'someone')}</div>
+                <div class="meta">${esc(c.name || c.email || 'someone')}</div>
                 <div>${esc(c.text)}</div>
               </div>`).join('');
       };
@@ -437,6 +581,17 @@ export async function renderMemory(root, id) {
         root.querySelector('#commentText').value = '';
         refresh();
       };
+
+      const plus1Btn = root.querySelector('#plus1Btn');
+      plus1Btn.onclick = async () => {
+        plus1Btn.disabled = true;
+        try {
+          const { resonance, resonated } = await toggleResonance(id);
+          plus1Btn.classList.toggle('on', resonated);
+          plus1Btn.querySelector('.count').textContent = resonance;
+        } catch (e) { console.warn(e); }
+        plus1Btn.disabled = false;
+      };
     }
   } catch (e) {
     root.innerHTML = `<div class="error">${esc(e.message)}</div>`;
@@ -445,82 +600,74 @@ export async function renderMemory(root, id) {
 
 
 // ============================================================================
-//  [DISCOVERY]  Full-page Three.js constellation, OrbitControls + raycasting
+//  [DISCOVERY]  Three.js constellation
 // ============================================================================
-//  Interactions:
-//    • Drag       — orbit the camera around the cloud
-//    • Scroll     — zoom in/out
-//    • Hover      — floating preview card (album art + song + author)
-//    • Click      — navigate to that memory's detail page
-//  Two toggles (top-left overlay):
-//    • Sound  — UMAP of Spotify audio-features
-//    • Social — UMAP of user-co-occurrence
+//  Three views, toggled top-left:
+//    • Sound      — UMAP of genre vectors
+//    • Social     — feeling-cluster layout (clickable cluster labels)
+//    • Friends    — UMAP restricted to me + my mutual friends
 // ============================================================================
-import { computeLayouts } from './umap.js';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 let discoveryAnimationId = null;
-let discoveryCleanup = null;  // tear down listeners when navigating away
-
-const USER_COLORS = [
-  [0xb7 / 255, 0x94 / 255, 0xff / 255],
-  [0xff / 255, 0x7a / 255, 0xb8 / 255],
-  [0x7a / 255, 0xdf / 255, 0xff / 255],
-  [0xff / 255, 0xd6 / 255, 0x6e / 255],
-  [0x9b / 255, 0xff / 255, 0x7a / 255],
-  [0xff / 255, 0x9f / 255, 0x6e / 255],
-  [0xa1 / 255, 0xff / 255, 0x9e / 255]
-];
+let discoveryCleanup = null;
 
 export async function renderDiscovery(root) {
-  // tear down previous instance
   if (discoveryAnimationId) cancelAnimationFrame(discoveryAnimationId);
   if (discoveryCleanup) { discoveryCleanup(); discoveryCleanup = null; }
 
-  // full-bleed: neutralize #app's max-width + padding for this screen
   root.style.maxWidth = 'none';
   root.style.padding  = '0';
 
   root.innerHTML = `
-    <div id="discWrap" style="position: fixed; inset: 60px 0 0 0; background: #02030a; overflow: hidden;">
-      <div id="discCanvas" style="position: absolute; inset: 0;"></div>
+    <div id="discWrap" class="disc-wrap">
+      <div id="discCanvas" class="disc-canvas"></div>
 
-      <div id="discOverlay" style="position: absolute; top: 1rem; left: 1rem; display: flex; flex-direction: column; gap: 0.6rem; z-index: 2; max-width: 320px;">
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-          <button id="sigSound"  class="toggle active">Sound</button>
-          <button id="sigSocial" class="toggle">Social</button>
-          <span id="discoveryStatus" style="color: var(--text-dim); font-size: 0.85rem; margin-left: 0.25rem;"></span>
+      <div class="disc-overlay">
+        <div class="disc-toggle-row">
+          <button id="sigSound"   class="toggle active">Sound</button>
+          <button id="sigSocial"  class="toggle">Social</button>
+          <button id="sigFriends" class="toggle">Me &amp; Friends</button>
+          <span id="discoveryStatus" class="disc-status"></span>
         </div>
-        <div id="sigExplain" style="background: rgba(10,10,20,0.72); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.75rem; color: var(--text-dim); font-size: 0.78rem; line-height: 1.4; backdrop-filter: blur(8px);"></div>
+        <div id="sigExplain" class="disc-explain"></div>
+        <div id="friendsPicker" class="disc-friends" style="display: none;"></div>
       </div>
 
-      <div id="discLegend" style="position: absolute; top: 1rem; right: 1rem; z-index: 2; background: rgba(10,10,20,0.72); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem 0.75rem; font-size: 0.75rem; color: var(--text-dim); backdrop-filter: blur(8px); line-height: 1.6;">
-        <div><span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:#ffffff; box-shadow:0 0 8px #fff; vertical-align:middle; margin-right:6px;"></span>your memories</div>
-        <div><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#b794ff; vertical-align:middle; margin-right:8px; margin-left:2px;"></span>others' memories</div>
-        <div><span style="display:inline-block; width:14px; height:14px; border-radius:50%; border:2px solid #ffd66e; vertical-align:middle; margin-right:5px;"></span>song you share with others</div>
+      <div class="disc-legend">
+        <div><span class="dot mine"></span>your memories</div>
+        <div><span class="dot other"></span>others'</div>
+        <div><span class="dot halo"></span>shared song</div>
       </div>
 
-      <div id="discHint" style="position: absolute; bottom: 1rem; left: 1rem; color: var(--text-dim); font-size: 0.8rem; z-index: 2;">
-        drag to orbit · scroll to zoom · hover a star · click to open
+      <div class="disc-hint">
+        drag · scroll · hover · click · cluster labels are <b>clickable rooms</b>
       </div>
 
-      <div id="discTip" style="position: absolute; pointer-events: none; display: none; background: rgba(10,10,20,0.92); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem; z-index: 3; max-width: 220px; font-size: 0.8rem; backdrop-filter: blur(8px);"></div>
+      <div id="discTip" class="disc-tip"></div>
+      <div id="discLabels" class="disc-labels"></div>
 
       <audio id="discAudio" preload="none" style="display: none;"></audio>
     </div>
   `;
 
-  const wrap    = root.querySelector('#discWrap');
-  const canvas  = root.querySelector('#discCanvas');
-  const tip     = root.querySelector('#discTip');
-  const status  = root.querySelector('#discoveryStatus');
+  const wrap     = root.querySelector('#discWrap');
+  const canvas   = root.querySelector('#discCanvas');
+  const tip      = root.querySelector('#discTip');
+  const labelsEl = root.querySelector('#discLabels');
+  const status   = root.querySelector('#discoveryStatus');
+  const explainEl = root.querySelector('#sigExplain');
+  const friendsPicker = root.querySelector('#friendsPicker');
   const setStatus = (t) => { status.textContent = t; };
 
-  // --- fetch memories ---
+  // ---- fetch memories + my friends list ----
   let memories = [];
-  try { memories = await getPublicMemories(); } catch (e) { /* empty */ }
+  let friends = [];
+  try { memories = await getPublicMemories(); } catch {}
+  try { friends = await getMyFriends(); } catch {}
 
-  // --- scene scaffolding (set up even if empty so we have something to show) ---
+  const myUid = auth.currentUser?.uid || null;
+
+  // ---- scene scaffolding ----
   const w = () => wrap.clientWidth;
   const h = () => wrap.clientHeight;
   const scene = new THREE.Scene();
@@ -530,7 +677,7 @@ export async function renderDiscovery(root) {
   renderer.setSize(w(), h());
   renderer.setPixelRatio(window.devicePixelRatio);
   canvas.appendChild(renderer.domElement);
-  addStars(scene);
+  addBackgroundStars(scene);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -541,7 +688,6 @@ export async function renderDiscovery(root) {
   controls.minDistance = 3;
   controls.maxDistance = 40;
 
-  // resize handling
   const onResize = () => {
     camera.aspect = w() / h();
     camera.updateProjectionMatrix();
@@ -550,7 +696,8 @@ export async function renderDiscovery(root) {
   window.addEventListener('resize', onResize);
 
   if (memories.length < 2) {
-    setStatus('Not enough memories yet — log some (or seed demo data in Profile).');
+    setStatus('Not enough memories yet — log some (or seed in Profile).');
+    explainEl.innerHTML = `<b>Discovery</b> shows every public memory as a star. Once a few people log songs, you'll see clusters form.`;
     const basicAnimate = () => {
       if (!document.body.contains(renderer.domElement)) {
         if (discoveryCleanup) { discoveryCleanup(); discoveryCleanup = null; }
@@ -570,8 +717,8 @@ export async function renderDiscovery(root) {
     return;
   }
 
-  // --- genres + UMAP ---
-  setStatus('Loading genre data…');
+  // ---- compute layouts ----
+  setStatus('Building constellation…');
   let layouts;
   try {
     layouts = await computeLayouts(memories, ({ stage, done, total }) => {
@@ -579,17 +726,55 @@ export async function renderDiscovery(root) {
       if (stage === 'umap')            setStatus('Running UMAP…');
     });
     setStatus(`${memories.length} memories`);
-  } catch (e) {
-    setStatus(`Layout failed: ${e.message}`);
-    return;
+  } catch (e) { setStatus(`Layout failed: ${e.message}`); return; }
+
+  // Friends layout — only computed when needed (cached).
+  let friendsLayout = null;
+  let friendsMemoriesCache = null;
+  function getFriendsLayout(selectedFriendUids) {
+    const eligible = new Set([myUid, ...selectedFriendUids]);
+    const subset = memories.filter((m) => eligible.has(m.uid));
+    if (subset.length < 2) {
+      const map = new Map();
+      subset.forEach((m) => map.set(m.id, [0, 0, 0]));
+      return { map, subsetIds: new Set(subset.map((m) => m.id)) };
+    }
+    const map = computeFriendsLayout(subset);
+    friendsMemoriesCache = subset;
+    return { map, subsetIds: new Set(subset.map((m) => m.id)) };
   }
 
-  // --- identify groups: mine vs others, plus "crossings" (songs logged by >1 user) ---
-  const myUid = auth.currentUser?.uid || null;
-  const uids = [...new Set(memories.map((m) => m.uid))];
-  const colorByUid = new Map(uids.map((u, i) => [u, USER_COLORS[i % USER_COLORS.length]]));
+  // ---- build points objects ----
+  const N = memories.length;
+  const positions = new Float32Array(N * 3);
+  const visibleFlags = new Float32Array(N).fill(1); // 1 = visible, 0 = hidden (Friends mode subset)
 
-  // Crossing = a song (spotifyId) present in memories from 2+ distinct uids.
+  // Two groups: mine (red, larger) + others (ink, smaller).
+  const mineIdxs = [];
+  const otherIdxs = [];
+  memories.forEach((m, i) => (m.uid === myUid ? mineIdxs : otherIdxs).push(i));
+
+  const COLOR_MINE  = new THREE.Color(0xd94f3c);
+  const COLOR_OTHER = new THREE.Color(0x222222);
+  const COLOR_HALO  = new THREE.Color(0xc89a2e);
+
+  function makePoints(subsetIdxs, { size, color, opacity }) {
+    const k = subsetIdxs.length;
+    const pos = new Float32Array(k * 3);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    const pts = new THREE.Points(g, new THREE.PointsMaterial({
+      size, sizeAttenuation: true, color, transparent: true, opacity
+    }));
+    pts.frustumCulled = false;
+    scene.add(pts);
+    return { pts, geom: g, idxs: subsetIdxs };
+  }
+
+  const othersObj = makePoints(otherIdxs, { size: 0.22, color: COLOR_OTHER, opacity: 0.75 });
+  const mineObj   = makePoints(mineIdxs,  { size: 0.50, color: COLOR_MINE,  opacity: 1.0 });
+
+  // Crossings — gold halos around MY songs that others have also logged.
   const usersBySong = new Map();
   for (const m of memories) {
     const s = m.song?.spotifyId;
@@ -598,47 +783,6 @@ export async function renderDiscovery(root) {
     usersBySong.get(s).add(m.uid);
   }
   const isCrossing = (m) => (usersBySong.get(m.song?.spotifyId)?.size ?? 0) >= 2;
-
-  // Split memories into two categories for separate Points objects.
-  const mineIdxs = [];   // indices (into `memories`) belonging to current user
-  const otherIdxs = [];  // everyone else
-  memories.forEach((m, i) => (m.uid === myUid ? mineIdxs : otherIdxs).push(i));
-
-  const N = memories.length;
-  // Shared positions array — we'll copy slices into each Points geometry each frame.
-  const positions = new Float32Array(N * 3);
-
-  // Helper to build a Points object over a subset of `memories`.
-  function makePoints(subsetIdxs, { size, brighten = 1, opacity = 0.95 }) {
-    const k = subsetIdxs.length;
-    const pos = new Float32Array(k * 3);
-    const col = new Float32Array(k * 3);
-    for (let j = 0; j < k; j++) {
-      const i = subsetIdxs[j];
-      const [r, g, b] = colorByUid.get(memories[i].uid) || [1, 1, 1];
-      // Brighten by blending toward white.
-      col[j * 3]     = Math.min(1, r + (1 - r) * (brighten - 1));
-      col[j * 3 + 1] = Math.min(1, g + (1 - g) * (brighten - 1));
-      col[j * 3 + 2] = Math.min(1, b + (1 - b) * (brighten - 1));
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    g.setAttribute('color',    new THREE.BufferAttribute(col, 3));
-    const pts = new THREE.Points(g, new THREE.PointsMaterial({
-      size, sizeAttenuation: true, vertexColors: true, transparent: true, opacity
-    }));
-    pts.frustumCulled = false;
-    scene.add(pts);
-    return { pts, geom: g, idxs: subsetIdxs };
-  }
-
-  // Others: small, semi-transparent, user-colored.
-  const othersObj = makePoints(otherIdxs, { size: 0.22, brighten: 1, opacity: 0.75 });
-  // Mine: noticeably larger, brighter, full opacity — white-tinted user color.
-  const mineObj   = makePoints(mineIdxs,  { size: 0.55, brighten: 1.6, opacity: 1.0 });
-
-  // Crossing halos: gold rings behind memories where I've overlapped with others.
-  // Only show halos around MY crossings (so the user sees "where I crossed paths").
   const crossIdxs = mineIdxs.filter((i) => isCrossing(memories[i]));
   let haloObj = null;
   if (crossIdxs.length) {
@@ -647,63 +791,128 @@ export async function renderDiscovery(root) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     const pts = new THREE.Points(g, new THREE.PointsMaterial({
-      size: 1.1, sizeAttenuation: true,
-      color: new THREE.Color(0xffd66e),
-      transparent: true, opacity: 0.35,
-      depthWrite: false
+      size: 1.0, sizeAttenuation: true, color: COLOR_HALO,
+      transparent: true, opacity: 0.45, depthWrite: false
     }));
     pts.frustumCulled = false;
     scene.add(pts);
     haloObj = { pts, geom: g, idxs: crossIdxs };
   }
 
-  // per-user connecting lines — my path brighter, others dim.
-  const lineGroups = [];
-  for (const uid of uids) {
-    const idxs = [];
-    memories.forEach((m, i) => { if (m.uid === uid) idxs.push(i); });
-    if (idxs.length < 2) continue;
-    const lineGeom = new THREE.BufferGeometry();
-    lineGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(idxs.length * 3), 3));
-    const [r, g, b] = colorByUid.get(uid);
-    const isMine = uid === myUid;
-    const mat = new THREE.LineBasicMaterial({
-      color: isMine ? new THREE.Color(1, 1, 1) : new THREE.Color(r, g, b),
-      transparent: true,
-      opacity: isMine ? 0.55 : 0.12
-    });
-    const line = new THREE.Line(lineGeom, mat);
-    scene.add(line);
-    lineGroups.push({ idxs, lineGeom });
-  }
-
-  // --- layout state ---
+  // ---- layout state ----
   const currentPos = new Map();
   const targetPos  = new Map();
+  let currentMode  = 'sound';
+
   function applyLayout(name) {
-    const map = layouts[name];
+    currentMode = name;
+    let map;
+    if (name === 'sound')   map = layouts.sound;
+    if (name === 'social')  map = layouts.social;
+    if (name === 'friends') {
+      const sel = currentFriendSelection();
+      friendsLayout = getFriendsLayout(sel);
+      map = friendsLayout.map;
+    }
+
+    // Visibility: in friends mode, hide memories not in subset.
+    visibleFlags.fill(1);
+    if (name === 'friends') {
+      memories.forEach((m, i) => { visibleFlags[i] = friendsLayout.subsetIds.has(m.id) ? 1 : 0; });
+    }
+
     for (const m of memories) {
-      const c = map.get(m.id) || [0, 0, 0];
+      const c = map?.get(m.id) || [0, 0, 0];
       targetPos.set(m.id, { x: c[0], y: c[1], z: c[2] });
       if (!currentPos.has(m.id)) currentPos.set(m.id, { x: c[0], y: c[1], z: c[2] });
     }
+
+    renderClusterLabels();
   }
+
+  // ---- friend picker UI ----
+  function currentFriendSelection() {
+    return Array.from(friendsPicker.querySelectorAll('input[type=checkbox]:checked'))
+      .map((cb) => cb.value);
+  }
+
+  function buildFriendsPicker() {
+    if (!friends.length) {
+      friendsPicker.innerHTML = `<div class="disc-friends-empty">No friends yet. Add some on your <a href="#/profile">Profile</a>.</div>`;
+      return;
+    }
+    friendsPicker.innerHTML = `
+      <div class="disc-friends-head">PICK WHO TO COMPARE WITH</div>
+      ${friends.map((f) => `
+        <label class="disc-friend">
+          <input type="checkbox" value="${esc(f.uid)}" checked />
+          ${esc(f.displayName || f.email || 'someone')}
+        </label>
+      `).join('')}
+    `;
+    friendsPicker.querySelectorAll('input[type=checkbox]').forEach((cb) => {
+      cb.onchange = () => applyLayout('friends');
+    });
+  }
+  buildFriendsPicker();
+
+  // ---- explain panel ----
   const EXPLAIN = {
-    sound:  `<b style="color: var(--text);">Sound</b> — each star is a memory, placed by the <i>genre fingerprint</i> of its song (and the artist behind it). UMAP projects that high-dimensional vector into 3D, so memories with similar-sounding music land near each other regardless of who logged them.`,
-    social: `<b style="color: var(--text);">Social</b> — each star is placed by <i>who</i> logged it and whose taste it resembles. Same-user memories pull together; users with overlapping taste intertwine instead of sitting in separate bubbles.`
+    sound: `<b>Sound</b> — every star is a memory, placed by the <i>genre fingerprint</i> of its song. UMAP projects that high-dimensional vector to 3D so memories with similar-sounding music land near each other. Compares: artist genres from Spotify + artist-id fallbacks.`,
+    social: `<b>Social</b> — clusters are <i>feelings</i>, not people. We send each memory's note to an LLM (openai/gpt-5-structured) and pull the top 10 feelings. Memories drift toward whichever feeling-cluster they share most. <b>Click a feeling label</b> to enter that room and chat with people in the same moment.`,
+    friends: `<b>Me &amp; Friends</b> — same Sound projection, but restricted to you + the friends you tick on the left. Useful for comparing taste with specific people instead of the whole site.`
   };
-  const explainEl = root.querySelector('#sigExplain');
-  const setExplain = (name) => { explainEl.innerHTML = EXPLAIN[name]; };
+  function setExplain(name) {
+    explainEl.innerHTML = EXPLAIN[name];
+    friendsPicker.style.display = name === 'friends' ? 'block' : 'none';
+  }
 
   applyLayout('sound');
   setExplain('sound');
 
-  const btnSound  = root.querySelector('#sigSound');
-  const btnSocial = root.querySelector('#sigSocial');
-  btnSound.onclick  = () => { btnSound.classList.add('active');  btnSocial.classList.remove('active'); applyLayout('sound');  setExplain('sound');  };
-  btnSocial.onclick = () => { btnSocial.classList.add('active'); btnSound.classList.remove('active');  applyLayout('social'); setExplain('social'); };
+  const btnSound   = root.querySelector('#sigSound');
+  const btnSocial  = root.querySelector('#sigSocial');
+  const btnFriends = root.querySelector('#sigFriends');
+  function activate(name) {
+    btnSound.classList.toggle('active',   name === 'sound');
+    btnSocial.classList.toggle('active',  name === 'social');
+    btnFriends.classList.toggle('active', name === 'friends');
+    applyLayout(name);
+    setExplain(name);
+  }
+  btnSound.onclick   = () => activate('sound');
+  btnSocial.onclick  = () => activate('social');
+  btnFriends.onclick = () => activate('friends');
 
-  // --- raycaster for hover + click ---
+  // ---- cluster labels (Social view only) ----
+  function renderClusterLabels() {
+    if (currentMode !== 'social' || !layouts.socialClusters?.length) {
+      labelsEl.innerHTML = '';
+      return;
+    }
+    labelsEl.innerHTML = layouts.socialClusters.map((c) =>
+      `<a class="cluster-label" data-feeling="${esc(c.feeling)}" href="#/room/${encodeURIComponent(c.feeling)}">
+         <span class="cluster-dot"></span>${esc(c.feeling).toUpperCase()}
+       </a>`
+    ).join('');
+  }
+
+  function projectClusterPositions() {
+    if (currentMode !== 'social' || !layouts.socialClusters?.length) return;
+    const labels = labelsEl.querySelectorAll('.cluster-label');
+    layouts.socialClusters.forEach((c, i) => {
+      const v = new THREE.Vector3(c.x, c.y, c.z).project(camera);
+      const x = (v.x *  0.5 + 0.5) * w();
+      const y = (-v.y * 0.5 + 0.5) * h();
+      const el = labels[i];
+      if (!el) return;
+      const inFront = v.z < 1;
+      el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+      el.style.opacity = inFront ? '1' : '0';
+    });
+  }
+
+  // ---- raycaster for hover/click ----
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   let hoverIdx = -1;
@@ -715,8 +924,6 @@ export async function renderDiscovery(root) {
   }
 
   function pickIndex() {
-    // Refresh bounding spheres — we mutate positions every frame and stale
-    // spheres cause raycaster's early-rejection to silently swallow hits.
     mineObj.geom.computeBoundingSphere();
     othersObj.geom.computeBoundingSphere();
     const dist = camera.position.length();
@@ -726,9 +933,10 @@ export async function renderDiscovery(root) {
     if (!hits.length) return -1;
     hits.sort((a, b) => a.distanceToRay - b.distanceToRay || a.distance - b.distance);
     const h = hits[0];
-    // Map (object, index-within-subset) back to the absolute memory index.
     const subset = h.object === mineObj.pts ? mineObj.idxs : othersObj.idxs;
-    return subset[h.index];
+    const absIdx = subset[h.index];
+    if (visibleFlags[absIdx] !== 1) return -1;   // hidden in friends mode
+    return absIdx;
   }
 
   const audioEl = root.querySelector('#discAudio');
@@ -736,19 +944,13 @@ export async function renderDiscovery(root) {
   let currentAudioId = null;
 
   async function playPreview(m) {
-    if (currentAudioId === m.id) return;  // already playing this one
+    if (currentAudioId === m.id) return;
     currentAudioId = m.id;
     const url = await fetchPreview(m.song);
-    if (currentAudioId !== m.id) return;  // user moved on while fetching
-    if (!url) { console.log('[preview] no url for', m.song?.name); stopPreview(); return; }
-    console.log('[preview] playing', m.song?.name, '→', url);
-    audioEl.src = url;
-    audioEl.currentTime = 0;
-    try {
-      await audioEl.play();
-    } catch (e) {
-      console.warn('[preview] play() rejected:', e.name, e.message);
-    }
+    if (currentAudioId !== m.id) return;
+    if (!url) { stopPreview(); return; }
+    audioEl.src = url; audioEl.currentTime = 0;
+    try { await audioEl.play(); } catch {}
   }
   function stopPreview() {
     if (currentAudioId === null) return;
@@ -761,36 +963,27 @@ export async function renderDiscovery(root) {
     const m = memories[idx];
     const artists = (m.song?.artists || []).join(', ');
     const art = m.song?.albumArt
-      ? `<img src="${esc(m.song.albumArt)}" style="width: 100%; border-radius: 4px; margin-bottom: 0.4rem;" />`
+      ? `<img src="${esc(m.song.albumArt)}" />`
       : '';
-    const previewTag = m.song?.previewUrl
-      ? `<div style="color: var(--accent); font-size: 0.7rem; margin-top: 0.3rem;">▶ playing preview</div>`
-      : `<div style="color: var(--text-dim); font-size: 0.7rem; margin-top: 0.3rem;">no preview available</div>`;
     tip.innerHTML = `
       ${art}
-      <div style="color: var(--text); font-weight: 500;">${esc(m.song?.name || 'untitled')}</div>
-      <div style="color: var(--text-dim);">${esc(artists)}</div>
-      <div style="color: var(--text-dim); margin-top: 0.3rem; font-size: 0.75rem;">
-        — ${esc(m.authorName || m.authorEmail || 'someone')}
-      </div>
-      ${previewTag}
+      <div class="tip-song">${esc(m.song?.name || 'untitled')}</div>
+      <div class="tip-artist">${esc(artists)}</div>
+      <div class="tip-author">— ${esc(m.authorName || m.authorEmail || 'someone')}</div>
+      ${(m.feelings?.length ? `<div class="tip-feelings">${m.feelings.slice(0, 4).map((f) => esc(f)).join(' · ')}</div>` : '')}
     `;
     tip.style.display = 'block';
     const pad = 14;
-    const tw = 220, th = tip.offsetHeight;
+    const tw = 240, th = tip.offsetHeight;
     let left = clientX + pad;
     let top  = clientY + pad;
     if (left + tw > window.innerWidth)  left = clientX - tw - pad;
     if (top  + th > window.innerHeight) top  = clientY - th - pad;
     tip.style.left = `${left}px`;
     tip.style.top  = `${top}px`;
-
     playPreview(m);
   }
-  function hideTip() {
-    tip.style.display = 'none';
-    stopPreview();
-  }
+  function hideTip() { tip.style.display = 'none'; stopPreview(); }
 
   function onMove(ev) {
     updatePointer(ev);
@@ -810,16 +1003,14 @@ export async function renderDiscovery(root) {
   renderer.domElement.addEventListener('click', onClick);
   renderer.domElement.style.cursor = 'grab';
 
-  // --- animate loop ---
+  // ---- animation ----
   const animate = () => {
-    // auto-cleanup if the canvas was detached by a route change
     if (!document.body.contains(renderer.domElement)) {
       if (discoveryCleanup) { discoveryCleanup(); discoveryCleanup = null; }
       return;
     }
     discoveryAnimationId = requestAnimationFrame(animate);
 
-    // ease the shared absolute-position buffer
     for (let i = 0; i < N; i++) {
       const m = memories[i];
       const c = currentPos.get(m.id);
@@ -827,12 +1018,13 @@ export async function renderDiscovery(root) {
       c.x += (t.x - c.x) * 0.08;
       c.y += (t.y - c.y) * 0.08;
       c.z += (t.z - c.z) * 0.08;
-      positions[i * 3]     = c.x;
-      positions[i * 3 + 1] = c.y;
-      positions[i * 3 + 2] = c.z;
+      // hidden points get pushed far away so they don't draw or pick.
+      const off = visibleFlags[i] === 1 ? 0 : 9999;
+      positions[i * 3]     = c.x + off;
+      positions[i * 3 + 1] = c.y + off;
+      positions[i * 3 + 2] = c.z + off;
     }
 
-    // copy into each subset Points geometry
     const copyInto = (obj) => {
       const arr = obj.geom.attributes.position.array;
       for (let k = 0; k < obj.idxs.length; k++) {
@@ -847,24 +1039,12 @@ export async function renderDiscovery(root) {
     copyInto(othersObj);
     if (haloObj) copyInto(haloObj);
 
-    // refresh line buffers from shared positions
-    for (const { idxs, lineGeom } of lineGroups) {
-      const arr = lineGeom.attributes.position.array;
-      for (let k = 0; k < idxs.length; k++) {
-        const i = idxs[k];
-        arr[k * 3]     = positions[i * 3];
-        arr[k * 3 + 1] = positions[i * 3 + 1];
-        arr[k * 3 + 2] = positions[i * 3 + 2];
-      }
-      lineGeom.attributes.position.needsUpdate = true;
-    }
-
     controls.update();
     renderer.render(scene, camera);
+    projectClusterPositions();
   };
   animate();
 
-  // --- cleanup on route change ---
   discoveryCleanup = () => {
     window.removeEventListener('resize', onResize);
     renderer.domElement.removeEventListener('pointermove', onMove);
@@ -877,26 +1057,113 @@ export async function renderDiscovery(root) {
   };
 }
 
-function addStars(scene) {
+function addBackgroundStars(scene) {
+  // Very subtle ambient pin-pricks on the cream background.
   const geom = new THREE.BufferGeometry();
   const pos = [];
-  for (let i = 0; i < 800; i++) pos.push((Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80);
+  for (let i = 0; i < 400; i++) pos.push((Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80);
   geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  scene.add(new THREE.Points(geom, new THREE.PointsMaterial({ color: 0xffffff, size: 0.04, transparent: true, opacity: 0.5 })));
+  scene.add(new THREE.Points(geom, new THREE.PointsMaterial({ color: 0x999999, size: 0.03, transparent: true, opacity: 0.35 })));
 }
 
 
 // ============================================================================
-//  [PROFILE]  account info + Spotify token status + sign out
+//  [ROOM]  feeling room — live chat + grid of memories tagged with this feeling
 // ============================================================================
-export function renderProfile(root) {
+let roomUnsub = null;
+
+export async function renderRoom(root, feeling) {
+  if (roomUnsub) { roomUnsub(); roomUnsub = null; }
+  if (!feeling) { root.innerHTML = `<div class="empty">Pick a feeling.</div>`; return; }
+
+  root.innerHTML = `
+    <a href="#/" style="color: var(--text-dim);">← back to Discovery</a>
+    <div class="room-page">
+      <div class="room-songs">
+        <div class="mini">FEELING ROOM</div>
+        <h1 class="room-title">${esc(feeling).toUpperCase()}</h1>
+        <p class="room-sub">Memories tagged with <b>${esc(feeling)}</b> — click any to open.</p>
+        <div id="roomGrid" class="room-grid">Loading…</div>
+      </div>
+      <div class="room-chat">
+        <div class="mini">LIVE ROOM</div>
+        <div id="roomMessages" class="room-messages">Connecting…</div>
+        <form id="roomForm" class="room-form">
+          <input id="roomInput" type="text" placeholder="Say something to others in this feeling…" maxlength="500" autocomplete="off" />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </div>
+  `;
+
+  // ---- grid of matching memories ----
+  const grid = root.querySelector('#roomGrid');
+  try {
+    const all = await getPublicMemories();
+    const matches = all.filter((m) => (m.feelings || []).includes(feeling));
+    if (matches.length === 0) {
+      grid.innerHTML = `<div class="empty">No memories tagged "${esc(feeling)}" yet.</div>`;
+    } else {
+      grid.innerHTML = matches.map((m) => `
+        <a class="room-card" href="#/memory/${esc(m.id)}">
+          ${m.song?.albumArt ? `<img src="${esc(m.song.albumArt)}" alt="" />` : '<div class="ph"></div>'}
+          <div class="room-card-info">
+            <div class="song">${esc(m.song?.name || 'Untitled')}</div>
+            <div class="artist">${esc((m.song?.artists || []).join(', '))}</div>
+            <div class="author">— ${esc(m.authorName || m.authorEmail || 'someone')}</div>
+          </div>
+        </a>
+      `).join('');
+    }
+  } catch (e) {
+    grid.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+
+  // ---- live chat ----
+  const messagesEl = root.querySelector('#roomMessages');
+  const form = root.querySelector('#roomForm');
+  const input = root.querySelector('#roomInput');
+
+  roomUnsub = subscribeRoomMessages(feeling, (msgs) => {
+    if (msgs.length === 0) {
+      messagesEl.innerHTML = `<div class="empty">Be the first to say something.</div>`;
+      return;
+    }
+    const myUid = auth.currentUser?.uid;
+    messagesEl.innerHTML = msgs.map((m) => `
+      <div class="room-msg ${m.uid === myUid ? 'mine' : ''}">
+        <div class="who">${esc(m.name || 'someone')}</div>
+        <div class="text">${esc(m.text)}</div>
+      </div>
+    `).join('');
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    try { await postRoomMessage(feeling, text); }
+    catch (err) { console.warn(err); }
+  };
+}
+
+
+// ============================================================================
+//  [PROFILE]  account + friends + curated archive
+// ============================================================================
+export async function renderProfile(root) {
   const user = auth.currentUser;
   const connected = isConnected();
+
   root.innerHTML = `
     <h1>Profile</h1>
+
     <div class="card">
       <div class="meta">Signed in as</div>
-      <div class="song">${esc(user?.email || user?.displayName || 'unknown')}</div>
+      <div class="song">${esc(user?.displayName || user?.email || 'unknown')}</div>
+      ${user?.email ? `<div class="meta" style="margin-top: 0.4rem;">${esc(user.email)}</div>` : ''}
     </div>
 
     <div class="card">
@@ -907,24 +1174,113 @@ export function renderProfile(root) {
         : `<button id="connectSpotify">Connect Spotify</button>`}
     </div>
 
-    <div class="card" style="border: 1px dashed var(--border); opacity: 0.8;">
+    <h2 style="margin-top: 2rem;">Friends</h2>
+    <div id="friendRequests"></div>
+    <div id="friendsList"></div>
+
+    <div class="card">
+      <div class="meta">Find people</div>
+      <input id="findUser" type="text" placeholder="Search name or email…" />
+      <div id="findResults"></div>
+    </div>
+
+    <h2 style="margin-top: 2rem;">Your archive</h2>
+    <div id="archive">Loading…</div>
+
+    <div class="card" style="border: 1px dashed var(--border); opacity: 0.8; margin-top: 2rem;">
       <div class="meta">Dev tools</div>
       <div style="color: var(--text-dim); font-size: 0.85rem; margin-bottom: 0.75rem;">
-        Seeds ~40 fake memories across 6 archetype users. Requires Spotify connected
-        and Firestore test-mode rules. Remove before shipping.
+        Seeds ~40 fake memories. Requires Spotify connected and Firestore test mode.
       </div>
       <button id="seedBtn" class="ghost" ${connected ? '' : 'disabled'}>Seed demo data</button>
       <span id="seedStatus" style="color: var(--text-dim); margin-left: 1rem; font-size: 0.85rem;"></span>
     </div>
 
-    <button id="logout" class="ghost">Sign out</button>
+    <button id="logout" class="ghost" style="margin-top: 2rem;">Sign out</button>
   `;
+
   const connectBtn = root.querySelector('#connectSpotify');
   const disconnectBtn = root.querySelector('#disconnectSpotify');
   if (connectBtn)    connectBtn.onclick    = () => startLogin();
   if (disconnectBtn) disconnectBtn.onclick = () => { disconnect(); renderProfile(root); };
   root.querySelector('#logout').onclick = () => logout();
 
+  // ---- friend requests + friends list ----
+  await refreshFriendsUI(root);
+
+  // ---- find people ----
+  const findInput   = root.querySelector('#findUser');
+  const findResults = root.querySelector('#findResults');
+  let findTimer;
+  findInput.oninput = () => {
+    clearTimeout(findTimer);
+    const q = findInput.value.trim().toLowerCase();
+    if (!q) { findResults.innerHTML = ''; return; }
+    findTimer = setTimeout(async () => {
+      try {
+        const all = await getAllUsers();
+        const me  = await ensureUserDoc();
+        const matches = all.filter((u) =>
+          u.uid !== auth.currentUser.uid &&
+          ((u.displayName || '').toLowerCase().includes(q) ||
+           (u.email       || '').toLowerCase().includes(q))
+        ).slice(0, 8);
+        const myFriendsSet = new Set(me?.friends || []);
+        const outgoing = await getOutgoingRequests();
+        const pendingSet = new Set(outgoing.map((r) => r.toUid));
+
+        if (matches.length === 0) { findResults.innerHTML = `<div class="empty" style="padding: 1rem;">No one found.</div>`; return; }
+        findResults.innerHTML = matches.map((u) => {
+          const status = myFriendsSet.has(u.uid)
+            ? `<span class="meta">friends ✓</span>`
+            : pendingSet.has(u.uid)
+              ? `<span class="meta">requested</span>`
+              : `<button class="ghost addFriend" data-uid="${esc(u.uid)}">Add friend</button>`;
+          return `
+            <div class="user-row">
+              <div>
+                <div class="song">${esc(u.displayName || 'someone')}</div>
+                <div class="meta">${esc(u.email || '')}</div>
+              </div>
+              <div>${status}</div>
+            </div>`;
+        }).join('');
+        findResults.querySelectorAll('.addFriend').forEach((b) => {
+          b.onclick = async () => {
+            b.disabled = true;
+            try { await sendFriendRequest(b.dataset.uid); b.outerHTML = `<span class="meta">requested</span>`; }
+            catch (e) { console.warn(e); b.disabled = false; }
+          };
+        });
+      } catch (e) {
+        findResults.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+      }
+    }, 250);
+  };
+
+  // ---- archive (your memories) ----
+  const archive = root.querySelector('#archive');
+  try {
+    const mine = await getMyMemories();
+    if (mine.length === 0) {
+      archive.innerHTML = `<div class="empty">Nothing logged yet. <a href="#/log">Log your first memory →</a></div>`;
+    } else {
+      archive.innerHTML = `<div class="archive-grid">${mine.map((m) => `
+        <a class="archive-card" href="#/memory/${esc(m.id)}">
+          ${m.song?.albumArt ? `<img src="${esc(m.song.albumArt)}" />` : '<div class="ph"></div>'}
+          <div class="info">
+            <div class="song">${esc(m.song?.name || 'Untitled')}</div>
+            <div class="artist">${esc((m.song?.artists || []).join(', '))}</div>
+            <div class="meta">${m.date ? new Date(m.date).toLocaleDateString() : ''} · +${m.resonance ?? 0}</div>
+          </div>
+        </a>
+      `).join('')}</div>`;
+    }
+  } catch (e) {
+    archive.innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+
+  // ---- seed ----
   const seedBtn    = root.querySelector('#seedBtn');
   const seedStatus = root.querySelector('#seedStatus');
   seedBtn.onclick = async () => {
@@ -932,10 +1288,63 @@ export function renderProfile(root) {
     try {
       await seedAll(({ done, total }) => { seedStatus.textContent = `${done}/${total}…`; });
       seedStatus.textContent = 'Seeded. Check Discovery.';
-    } catch (e) {
-      seedStatus.textContent = `Failed: ${e.message}`;
-    } finally {
-      seedBtn.disabled = false;
-    }
+    } catch (e) { seedStatus.textContent = `Failed: ${e.message}`; }
+    finally { seedBtn.disabled = false; }
   };
+}
+
+async function refreshFriendsUI(root) {
+  const reqEl    = root.querySelector('#friendRequests');
+  const friendsEl = root.querySelector('#friendsList');
+  try {
+    const incoming = await getIncomingRequests();
+    if (incoming.length) {
+      reqEl.innerHTML = `
+        <div class="card">
+          <div class="meta">Incoming friend requests</div>
+          ${incoming.map((r) => `
+            <div class="user-row">
+              <div>
+                <div class="song">${esc(r.fromName || 'someone')}</div>
+                <div class="meta">${esc(r.fromEmail || '')}</div>
+              </div>
+              <div style="display: flex; gap: 0.5rem;">
+                <button class="acceptReq" data-id="${esc(r.id)}">Accept</button>
+                <button class="ghost rejectReq" data-id="${esc(r.id)}">Reject</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>`;
+      reqEl.querySelectorAll('.acceptReq').forEach((b) => {
+        b.onclick = async () => { await acceptFriendRequest(b.dataset.id); refreshFriendsUI(root); };
+      });
+      reqEl.querySelectorAll('.rejectReq').forEach((b) => {
+        b.onclick = async () => { await rejectFriendRequest(b.dataset.id); refreshFriendsUI(root); };
+      });
+    } else { reqEl.innerHTML = ''; }
+
+    const friends = await getMyFriends();
+    if (friends.length) {
+      friendsEl.innerHTML = `
+        <div class="card">
+          <div class="meta">Your friends (${friends.length})</div>
+          ${friends.map((f) => `
+            <div class="user-row">
+              <div>
+                <div class="song">${esc(f.displayName || 'someone')}</div>
+                <div class="meta">${esc(f.email || '')}</div>
+              </div>
+              <button class="ghost unfriendBtn" data-uid="${esc(f.uid)}">Unfriend</button>
+            </div>
+          `).join('')}
+        </div>`;
+      friendsEl.querySelectorAll('.unfriendBtn').forEach((b) => {
+        b.onclick = async () => { await unfriend(b.dataset.uid); refreshFriendsUI(root); };
+      });
+    } else {
+      friendsEl.innerHTML = `<div class="card"><div class="meta">No friends yet</div><div style="color: var(--text-dim);">Find people below and send a friend request. Once they accept, you can compare taste in <b>Me &amp; Friends</b> on Discovery.</div></div>`;
+    }
+  } catch (e) {
+    console.warn('friends refresh:', e);
+  }
 }

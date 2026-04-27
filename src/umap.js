@@ -1,20 +1,24 @@
 // ============================================================================
-//  SONDER — UMAP LAYOUTS (two signals: sound + social)
+//  SONDER — UMAP LAYOUTS (three signals: sound + social + me & friends)
 // ============================================================================
 //  Sections:
 //     [FETCH]     ensure every memory has cached genre list
 //     [VECTORS]   build the input matrix for each signal
 //     [RUN]       runUmap — call umap-js, return 3D coords scaled for Three.js
-//     [PIPELINE]  computeLayouts — one call, returns maps for both signals
+//     [FEELINGS]  feeling-cluster layout (fixed cluster centers, not UMAP)
+//     [PIPELINE]  computeLayouts — one call, returns maps for all signals
 // ============================================================================
 //
-//  Two signals, two separate UMAP runs:
-//    • sound   — multi-hot genre vector from the track's first artist.
-//                Built from the union of all genres across public memories.
-//    • social  — binary vector of which users ALSO logged this song.
-//                Same-song memories share a row → they cluster.
+//  Layouts produced:
+//    • sound        — UMAP of multi-hot Spotify genre + artist-id fallback
+//    • social       — feeling clusters: top-N feelings become anchor points,
+//                     each memory drifts toward its dominant feeling. Cluster
+//                     CENTERS are returned separately so Discovery can label
+//                     them and let users click-into a feeling room.
+//    • myFriends    — UMAP of multi-hot genre, restricted to me+friends only
 //
-//  Output per signal: Map<memoryId, [x, y, z]> in the Three.js ±6 box.
+//  Output per signal: Map<memoryId, [x, y, z]>
+//  Plus `social.clusters: { feeling: string, x, y, z }[]` for label rendering.
 // ============================================================================
 
 import { UMAP } from 'umap-js';
@@ -29,12 +33,12 @@ async function cacheGenres(memories, onProgress) {
   for (let i = 0; i < memories.length; i++) {
     onProgress?.({ stage: 'genres', done: i, total: memories.length });
     const m = memories[i];
-    if (Array.isArray(m.genres)) continue;       // already cached
+    if (Array.isArray(m.genres)) continue;
     const artistId = m.song?.artistId;
-    if (!artistId) { m.genres = []; continue; }  // can't fetch without id
+    if (!artistId) { m.genres = []; continue; }
     try {
       const g = await getArtistGenres(artistId);
-      m.genres = g;                               // mutate in place
+      m.genres = g;
       await updateMemoryGenres(m.id, g);
     } catch (e) {
       console.warn(`[genres] skipped ${m.id}:`, e.message);
@@ -49,8 +53,6 @@ async function cacheGenres(memories, onProgress) {
 //  [VECTORS]
 // ============================================================================
 
-// Sound: multi-hot genre encoding + artist-id fallback columns so memories
-// with no Spotify genres still carry signal (same artist → still cluster).
 function buildSoundVectors(memories) {
   const genreVocab = new Map();
   const artistVocab = new Map();
@@ -75,59 +77,6 @@ function buildSoundVectors(memories) {
     const aid = m.song?.artistId;
     if (aid && artistVocab.has(aid)) row[G + artistVocab.get(aid)] = 0.6;
     return row.some((v) => v > 0) ? row : null;
-  });
-}
-
-// Social: binary co-logger vector (who else logged this song) BLENDED with
-// the user's taste profile (their full genre distribution). Taste blending
-// pulls users with overlapping taste toward each other even when they
-// haven't logged the same exact tracks → more intertwining.
-function buildSocialVectors(memories) {
-  const users = [...new Set(memories.map((m) => m.uid).filter(Boolean))];
-  const userIdx = new Map(users.map((u, i) => [u, i]));
-
-  const loggersBySong = new Map();
-  for (const m of memories) {
-    const s = m.song?.spotifyId;
-    if (!s) continue;
-    if (!loggersBySong.has(s)) loggersBySong.set(s, new Set());
-    loggersBySong.get(s).add(m.uid);
-  }
-
-  // Per-user taste profile: normalized genre counts across all their memories.
-  const genreVocab = new Map();
-  for (const m of memories) for (const g of (m.genres || [])) {
-    if (!genreVocab.has(g)) genreVocab.set(g, genreVocab.size);
-  }
-  const G = genreVocab.size;
-  const tasteByUser = new Map();
-  for (const u of users) tasteByUser.set(u, new Array(G).fill(0));
-  for (const m of memories) {
-    if (!m.uid) continue;
-    const t = tasteByUser.get(m.uid);
-    if (!t) continue;
-    for (const g of (m.genres || [])) {
-      const i = genreVocab.get(g);
-      if (i !== undefined) t[i] += 1;
-    }
-  }
-  // L2-normalize each user's taste vector.
-  for (const [u, t] of tasteByUser) {
-    const n = Math.sqrt(t.reduce((s, v) => s + v * v, 0)) || 1;
-    tasteByUser.set(u, t.map((v) => v / n));
-  }
-
-  // Final row = [co-logger bits | blended taste of that memory's user].
-  // Taste block is down-weighted so co-logging still dominates but
-  // similar-taste users aren't fully disjoint.
-  const TASTE_WEIGHT = 0.5;
-  return memories.map((m) => {
-    const userRow = new Array(users.length).fill(0);
-    const loggers = loggersBySong.get(m.song?.spotifyId);
-    if (loggers) for (const u of loggers) if (userIdx.has(u)) userRow[userIdx.get(u)] = 1;
-
-    const taste = (m.uid && tasteByUser.get(m.uid)) || new Array(G).fill(0);
-    return [...userRow, ...taste.map((v) => v * TASTE_WEIGHT)];
   });
 }
 
@@ -177,23 +126,120 @@ function normalize(coords) {
 
 
 // ============================================================================
-//  [PIPELINE]  one entry point — cache genres, then two UMAP runs
+//  [FEELINGS]  fixed cluster centers based on top-N feelings across corpus
+// ============================================================================
+//  Why fixed centers (not UMAP):
+//    • Reviewer feedback: clusters should be readable as feelings.
+//    • Fixed positions let us label each cluster + make it clickable.
+//    • Each cluster center sits on a Fibonacci sphere; memories drift
+//      toward whichever of their top-10 feelings is most popular overall.
+// ============================================================================
+const MAX_CLUSTERS = 10;
+
+function topFeelings(memories) {
+  const counts = new Map();
+  for (const m of memories) {
+    for (const f of (m.feelings || [])) {
+      counts.set(f, (counts.get(f) || 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_CLUSTERS)
+    .map(([f]) => f);
+}
+
+// Distribute N points roughly evenly on a sphere of radius R.
+function fibonacciSphere(n, R) {
+  const pts = [];
+  const phi = Math.PI * (Math.sqrt(5) - 1);
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / Math.max(1, n - 1)) * 2;
+    const r = Math.sqrt(1 - y * y);
+    const t = phi * i;
+    pts.push([Math.cos(t) * r * R, y * R, Math.sin(t) * r * R]);
+  }
+  return pts;
+}
+
+function buildFeelingLayout(memories) {
+  const tops = topFeelings(memories);
+  const clusters = [];
+  if (tops.length === 0) {
+    // No feelings yet — collapse everything to origin so social view still renders.
+    const map = new Map();
+    for (const m of memories) map.set(m.id, [0, 0, 0]);
+    return { map, clusters };
+  }
+
+  const centers = fibonacciSphere(tops.length, 6);
+  const topSet = new Map(tops.map((f, i) => [f, i]));
+  tops.forEach((f, i) => {
+    clusters.push({ feeling: f, x: centers[i][0], y: centers[i][1], z: centers[i][2] });
+  });
+
+  const map = new Map();
+  for (const m of memories) {
+    const fs = (m.feelings || []).filter((f) => topSet.has(f));
+    if (fs.length === 0) {
+      // No top-feeling match — drop in the "void" near origin.
+      map.set(m.id, [
+        (Math.random() - 0.5) * 1.5,
+        (Math.random() - 0.5) * 1.5,
+        (Math.random() - 0.5) * 1.5
+      ]);
+      continue;
+    }
+    // Weighted average of cluster centers, weight = inverse rank in this memory's
+    // top-10 (so the FIRST listed feeling pulls hardest).
+    let wx = 0, wy = 0, wz = 0, ws = 0;
+    fs.forEach((f, rank) => {
+      const w = 1 / (rank + 1);
+      const c = centers[topSet.get(f)];
+      wx += c[0] * w; wy += c[1] * w; wz += c[2] * w;
+      ws += w;
+    });
+    const cx = wx / ws, cy = wy / ws, cz = wz / ws;
+    // Small jitter so memories don't perfectly overlap on cluster centers.
+    map.set(m.id, [
+      cx + (Math.random() - 0.5) * 0.6,
+      cy + (Math.random() - 0.5) * 0.6,
+      cz + (Math.random() - 0.5) * 0.6
+    ]);
+  }
+  return { map, clusters };
+}
+
+
+// ============================================================================
+//  [PIPELINE]  one entry point — cache genres, then build all signals
 // ============================================================================
 export async function computeLayouts(memories, onProgress = () => {}) {
   await cacheGenres(memories, onProgress);
 
   onProgress({ stage: 'umap' });
-  // Sound: loose params so genre clusters spread out instead of collapsing.
-  const sound  = runUmap(memories, buildSoundVectors(memories), {
+
+  // Sound: loose UMAP across genre vectors.
+  const sound = runUmap(memories, buildSoundVectors(memories), {
     minDist: 0.8, spread: 1.8, maxNeighbors: 8, jitter: 0.1
   });
-  // Social: tighter minDist + more neighbors so similar-taste users intertwine
-  // instead of forming disconnected bubbles.
-  const social = runUmap(memories, buildSocialVectors(memories), {
-    minDist: 0.15, spread: 1.2, maxNeighbors: 20, jitter: 0.05
-  });
 
-  return { sound: toMap(sound), social: toMap(social) };
+  // Social: feeling-cluster layout (NOT UMAP).
+  const feelingLayout = buildFeelingLayout(memories);
+
+  return {
+    sound: toMap(sound),
+    social: feelingLayout.map,
+    socialClusters: feelingLayout.clusters
+  };
+}
+
+// Compute a "Me & Friends" sound layout over a filtered subset.
+export function computeFriendsLayout(memories) {
+  const sound = runUmap(memories, buildSoundVectors(memories), {
+    minDist: 0.6, spread: 1.6, maxNeighbors: 10, jitter: 0.08
+  });
+  return toMap(sound);
 }
 
 function toMap({ ids, coords }) {
