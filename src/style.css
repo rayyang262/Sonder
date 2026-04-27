@@ -708,6 +708,85 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
 }
 .cluster-label:hover .cluster-dot { background: var(--bg-elev); }
 
+/* Feels-mode: a small colored circle anchored at each cluster center.
+   Hover reveals a label tooltip with the feeling name (clickable → room). */
+.cluster-dot-anchor {
+  position: absolute;
+  pointer-events: auto;
+  width: 18px; height: 18px;
+  margin: -9px 0 0 -9px;     /* centered on transform anchor */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  text-decoration: none;
+}
+.cluster-dot-anchor .dot {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--dot, #888);
+  box-shadow: 0 0 0 2px rgba(246,243,236,0.85), 0 0 10px rgba(0,0,0,0.18);
+  transition: transform 0.15s;
+}
+.cluster-dot-anchor:hover .dot { transform: scale(1.45); }
+.cluster-dot-anchor .tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  background: var(--ink);
+  color: var(--bg-elev);
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.cluster-dot-anchor:hover .tip { opacity: 1; }
+
+/* Sound + Me & Friends: italic genre name floating at each genre's centroid. */
+.genre-label {
+  position: absolute;
+  pointer-events: none;
+  font-family: var(--font-serif, Georgia, serif);
+  font-style: italic;
+  font-size: 0.95rem;
+  color: var(--ink);
+  background: rgba(246, 243, 236, 0.78);
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 4px rgba(246,243,236,0.9);
+}
+
+/* Dynamic legend: one row of labeled swatches; populated per mode. */
+.disc-legend .legend-title {
+  font-family: var(--font-display);
+  font-size: 0.62rem;
+  letter-spacing: 0.18em;
+  color: var(--ink-soft);
+  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+}
+.disc-legend .legend-row {
+  display: flex; flex-wrap: wrap; gap: 0.5rem 0.85rem;
+  max-width: 280px;
+}
+.disc-legend .legend-chip {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  font-size: 0.74rem;
+}
+.disc-legend .legend-swatch {
+  width: 11px; height: 11px; border-radius: 50%;
+  display: inline-block;
+}
+
 /* ============================================================================
    FEELING ROOM (chat + grid)
 ============================================================================ */

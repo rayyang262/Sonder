@@ -1,24 +1,24 @@
 // ============================================================================
-//  SONDER — UMAP LAYOUTS (three signals: sound + social + me & friends)
+//  SONDER — UMAP LAYOUTS (three signals: sound + feels + me & friends)
 // ============================================================================
 //  Sections:
-//     [FETCH]     ensure every memory has cached genre list
-//     [VECTORS]   build the input matrix for each signal
-//     [RUN]       runUmap — call umap-js, return 3D coords scaled for Three.js
-//     [FEELINGS]  feeling-cluster layout (fixed cluster centers, not UMAP)
-//     [PIPELINE]  computeLayouts — one call, returns maps for all signals
+//     [FETCH]      ensure every memory has cached genre list
+//     [VECTORS]    build the input matrix for each signal
+//     [RUN]        runUmap — call umap-js, return 3D coords scaled for Three.js
+//     [GENRES]     compute genre-anchor labels (centroid of each top-K genre)
+//     [FEELINGS]   feel-cluster layout (≥5 clusters, fixed sphere centers)
+//     [PIPELINE]   computeLayouts — one call, returns maps + label data
 // ============================================================================
 //
 //  Layouts produced:
 //    • sound        — UMAP of multi-hot Spotify genre + artist-id fallback
-//    • social       — feeling clusters: top-N feelings become anchor points,
-//                     each memory drifts toward its dominant feeling. Cluster
-//                     CENTERS are returned separately so Discovery can label
-//                     them and let users click-into a feeling room.
-//    • myFriends    — UMAP of multi-hot genre, restricted to me+friends only
-//
-//  Output per signal: Map<memoryId, [x, y, z]>
-//  Plus `social.clusters: { feeling: string, x, y, z }[]` for label rendering.
+//                     + genreLabels[]: top-K genres positioned at their centroids
+//    • feels        — feel-cluster layout: ≥5 anchor clusters with distinct
+//                     colors. Every memory is assigned to a cluster (memories
+//                     without feelings get hash-distributed so they spread).
+//                     Returns clusters[], membership map (memId → clusterIdx).
+//    • myFriends    — UMAP restricted to me+friends subset, with its OWN
+//                     genre labels recomputed against just that subset.
 // ============================================================================
 
 import { UMAP } from 'umap-js';
@@ -52,7 +52,6 @@ async function cacheGenres(memories, onProgress) {
 // ============================================================================
 //  [VECTORS]
 // ============================================================================
-
 function buildSoundVectors(memories) {
   const genreVocab = new Map();
   const artistVocab = new Map();
@@ -88,13 +87,15 @@ function runUmap(memories, vectors, opts = {}) {
   const { minDist = 0.5, spread = 1.5, maxNeighbors = 15, jitter = 0.08 } = opts;
   const ids = [];
   const valid = [];
+  const validIdxs = [];
   for (let i = 0; i < memories.length; i++) {
     if (Array.isArray(vectors[i]) && vectors[i].length > 0) {
       ids.push(memories[i].id);
+      validIdxs.push(i);
       valid.push(vectors[i].map((v) => v + (Math.random() - 0.5) * jitter));
     }
   }
-  if (valid.length < 2) return { ids, coords: valid.map(() => [0, 0, 0]) };
+  if (valid.length < 2) return { ids, coords: valid.map(() => [0, 0, 0]), validIdxs };
 
   const nNeighbors = Math.max(2, Math.min(maxNeighbors, valid.length - 1));
   const umap = new UMAP({ nComponents: 3, nNeighbors, minDist, spread });
@@ -103,10 +104,10 @@ function runUmap(memories, vectors, opts = {}) {
     raw = umap.fit(valid);
   } catch (e) {
     console.warn('[umap] fit failed, falling back to zeros:', e.message);
-    return { ids, coords: valid.map(() => [0, 0, 0]) };
+    return { ids, coords: valid.map(() => [0, 0, 0]), validIdxs };
   }
   raw = raw.map((c) => c.map((v) => Number.isFinite(v) ? v : 0));
-  return { ids, coords: normalize(raw) };
+  return { ids, coords: normalize(raw), validIdxs };
 }
 
 function normalize(coords) {
@@ -126,22 +127,86 @@ function normalize(coords) {
 
 
 // ============================================================================
-//  [FEELINGS]  fixed cluster centers based on top-N feelings across corpus
+//  [GENRES]  Genre anchor labels = centroid of all memories with that genre
 // ============================================================================
-//  Why fixed centers (not UMAP):
-//    • Reviewer feedback: clusters should be readable as feelings.
-//    • Fixed positions let us label each cluster + make it clickable.
-//    • Each cluster center sits on a Fibonacci sphere; memories drift
-//      toward whichever of their top-10 feelings is most popular overall.
+//  After UMAP places memories, find the top-K most common genres and put
+//  a floating label at the average position of memories carrying that genre.
+//  Side benefit: the user can read which "side" of the cloud means what.
 // ============================================================================
+const MAX_GENRE_LABELS = 6;
+
+function computeGenreLabels(memories, layoutMap) {
+  // Count genre frequency across memories that actually got placed.
+  const counts = new Map();
+  for (const m of memories) {
+    if (!layoutMap.has(m.id)) continue;
+    for (const g of (m.genres || [])) {
+      counts.set(g, (counts.get(g) || 0) + 1);
+    }
+  }
+  if (counts.size === 0) return [];
+
+  // Pick top-K, but require at least 2 memories per genre so a one-off doesn't
+  // dominate a corner of the map.
+  const top = [...counts.entries()]
+    .filter(([, n]) => n >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_GENRE_LABELS)
+    .map(([g]) => g);
+  if (top.length === 0) return [];
+
+  return top.map((genre) => {
+    let sx = 0, sy = 0, sz = 0, n = 0;
+    for (const m of memories) {
+      if (!(m.genres || []).includes(genre)) continue;
+      const c = layoutMap.get(m.id);
+      if (!c) continue;
+      sx += c[0]; sy += c[1]; sz += c[2]; n++;
+    }
+    if (!n) return null;
+    return { genre, x: sx / n, y: sy / n, z: sz / n, count: n };
+  }).filter(Boolean);
+}
+
+
+// ============================================================================
+//  [FEELINGS]  Guaranteed ≥5 clusters with colors and full memory membership
+// ============================================================================
+//  Why this exists:
+//    • Reviewer feedback: "make sure there's at least 5 clusters, each with
+//      a different color, and a label that appears on hover".
+//    • Old behavior dumped memories with no feelings at the origin → they all
+//      collapsed into one ball. Now every memory gets assigned to a cluster
+//      (hash-fallback distributes ones without feelings across the 5+).
+// ============================================================================
+const MIN_CLUSTERS = 5;
 const MAX_CLUSTERS = 10;
+
+// Default feelings used to top-up the cluster list when the corpus has < 5
+// distinct top feelings. These read clearly and span the emotional range.
+const DEFAULT_FEELINGS = [
+  'nostalgic', 'euphoric', 'melancholy', 'calm', 'hopeful',
+  'heartbroken', 'energized', 'tender', 'lonely', 'rage'
+];
+
+// 10-color palette tuned for cream background (saturated but not garish).
+const CLUSTER_PALETTE = [
+  '#d94f3c', // editorial red
+  '#3c8ad9', // cobalt
+  '#c89a2e', // gold
+  '#5fa863', // sage green
+  '#9b59b6', // amethyst
+  '#e67e22', // tangerine
+  '#1abc9c', // teal
+  '#c2185b', // raspberry
+  '#34495e', // slate
+  '#7d6f3d'  // olive
+];
 
 function topFeelings(memories) {
   const counts = new Map();
   for (const m of memories) {
-    for (const f of (m.feelings || [])) {
-      counts.set(f, (counts.get(f) || 0) + 1);
-    }
+    for (const f of (m.feelings || [])) counts.set(f, (counts.get(f) || 0) + 1);
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
@@ -149,7 +214,6 @@ function topFeelings(memories) {
     .map(([f]) => f);
 }
 
-// Distribute N points roughly evenly on a sphere of radius R.
 function fibonacciSphere(n, R) {
   const pts = [];
   const phi = Math.PI * (Math.sqrt(5) - 1);
@@ -162,52 +226,62 @@ function fibonacciSphere(n, R) {
   return pts;
 }
 
+// Stable hash (djb2) — map any string to a small integer for fallback assignment.
+function hashStr(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
 function buildFeelingLayout(memories) {
-  const tops = topFeelings(memories);
-  const clusters = [];
-  if (tops.length === 0) {
-    // No feelings yet — collapse everything to origin so social view still renders.
-    const map = new Map();
-    for (const m of memories) map.set(m.id, [0, 0, 0]);
-    return { map, clusters };
+  // 1) Pick base cluster set from corpus; pad with defaults to hit MIN_CLUSTERS.
+  const fromCorpus = topFeelings(memories);
+  const all = [...fromCorpus];
+  for (const d of DEFAULT_FEELINGS) {
+    if (all.length >= MIN_CLUSTERS) break;
+    if (!all.includes(d)) all.push(d);
   }
-
-  const centers = fibonacciSphere(tops.length, 6);
+  const tops = all.slice(0, MAX_CLUSTERS);
   const topSet = new Map(tops.map((f, i) => [f, i]));
-  tops.forEach((f, i) => {
-    clusters.push({ feeling: f, x: centers[i][0], y: centers[i][1], z: centers[i][2] });
-  });
 
+  // 2) Place cluster centers on a sphere with a generous radius.
+  const RADIUS = 7;
+  const centers = fibonacciSphere(tops.length, RADIUS);
+  const clusters = tops.map((feeling, i) => ({
+    feeling,
+    x: centers[i][0],
+    y: centers[i][1],
+    z: centers[i][2],
+    color: CLUSTER_PALETTE[i % CLUSTER_PALETTE.length]
+  }));
+
+  // 3) Assign every memory to a cluster + position with jitter.
   const map = new Map();
+  const membership = new Map();
   for (const m of memories) {
     const fs = (m.feelings || []).filter((f) => topSet.has(f));
-    if (fs.length === 0) {
-      // No top-feeling match — drop in the "void" near origin.
-      map.set(m.id, [
-        (Math.random() - 0.5) * 1.5,
-        (Math.random() - 0.5) * 1.5,
-        (Math.random() - 0.5) * 1.5
-      ]);
-      continue;
+    let clusterIdx;
+    if (fs.length) {
+      // Pick the first matching feeling (already in user's importance order).
+      clusterIdx = topSet.get(fs[0]);
+    } else {
+      // Hash-distribute: spreads memoryless-feeling memories across clusters
+      // instead of dumping them at the origin.
+      clusterIdx = hashStr(m.id || '') % tops.length;
     }
-    // Weighted average of cluster centers, weight = inverse rank in this memory's
-    // top-10 (so the FIRST listed feeling pulls hardest).
-    let wx = 0, wy = 0, wz = 0, ws = 0;
-    fs.forEach((f, rank) => {
-      const w = 1 / (rank + 1);
-      const c = centers[topSet.get(f)];
-      wx += c[0] * w; wy += c[1] * w; wz += c[2] * w;
-      ws += w;
-    });
-    const cx = wx / ws, cy = wy / ws, cz = wz / ws;
-    // Small jitter so memories don't perfectly overlap on cluster centers.
+    membership.set(m.id, clusterIdx);
+    const c = centers[clusterIdx];
+    // Jitter within a small radius around the cluster center; keep clusters
+    // visually distinct but not pancake-flat.
+    const jr = 1.1;
     map.set(m.id, [
-      cx + (Math.random() - 0.5) * 0.6,
-      cy + (Math.random() - 0.5) * 0.6,
-      cz + (Math.random() - 0.5) * 0.6
+      c[0] + (Math.random() - 0.5) * 2 * jr,
+      c[1] + (Math.random() - 0.5) * 2 * jr,
+      c[2] + (Math.random() - 0.5) * 2 * jr
     ]);
   }
-  return { map, clusters };
+
+  return { map, clusters, membership };
 }
 
 
@@ -219,27 +293,33 @@ export async function computeLayouts(memories, onProgress = () => {}) {
 
   onProgress({ stage: 'umap' });
 
-  // Sound: loose UMAP across genre vectors.
-  const sound = runUmap(memories, buildSoundVectors(memories), {
+  // Sound: loose UMAP across genre vectors + genre-centroid labels.
+  const soundRun = runUmap(memories, buildSoundVectors(memories), {
     minDist: 0.8, spread: 1.8, maxNeighbors: 8, jitter: 0.1
   });
+  const soundMap = toMap(soundRun);
+  const soundGenres = computeGenreLabels(memories, soundMap);
 
-  // Social: feeling-cluster layout (NOT UMAP).
+  // Feels: cluster layout (≥5 clusters guaranteed).
   const feelingLayout = buildFeelingLayout(memories);
 
   return {
-    sound: toMap(sound),
-    social: feelingLayout.map,
-    socialClusters: feelingLayout.clusters
+    sound: soundMap,
+    soundGenres,
+    feels: feelingLayout.map,
+    feelsClusters: feelingLayout.clusters,
+    feelsMembership: feelingLayout.membership
   };
 }
 
-// Compute a "Me & Friends" sound layout over a filtered subset.
+// "Me & Friends" — UMAP over the subset, with subset-specific genre labels.
 export function computeFriendsLayout(memories) {
-  const sound = runUmap(memories, buildSoundVectors(memories), {
+  const run = runUmap(memories, buildSoundVectors(memories), {
     minDist: 0.6, spread: 1.6, maxNeighbors: 10, jitter: 0.08
   });
-  return toMap(sound);
+  const map = toMap(run);
+  const genres = computeGenreLabels(memories, map);
+  return { map, genres };
 }
 
 function toMap({ ids, coords }) {

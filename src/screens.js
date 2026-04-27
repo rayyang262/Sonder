@@ -99,7 +99,7 @@ export function renderOnboarding(root) {
         <div class="onboard-card">
           <div class="num">01</div>
           <div class="ttl">DISCOVERY</div>
-          <p>A 3D constellation of every memory on Sonder. Drag to orbit, hover to preview, click a star to read its story. Switch between <b>Sound</b> (clusters by genre) and <b>Social</b> (clusters by the feeling behind the memory).</p>
+          <p>A 3D constellation of every memory on Sonder. Drag to orbit, hover to preview, click a star to read its story. Switch between <b>Sound</b> (clusters by genre) and <b>Feels</b> (clusters by the feeling behind the memory).</p>
         </div>
         <div class="onboard-card">
           <div class="num">02</div>
@@ -625,7 +625,7 @@ export async function renderDiscovery(root) {
       <div class="disc-overlay">
         <div class="disc-toggle-row">
           <button id="sigSound"   class="toggle active">Sound</button>
-          <button id="sigSocial"  class="toggle">Social</button>
+          <button id="sigFeels"   class="toggle">Feels</button>
           <button id="sigFriends" class="toggle">Me &amp; Friends</button>
           <span id="discoveryStatus" class="disc-status"></span>
         </div>
@@ -633,14 +633,10 @@ export async function renderDiscovery(root) {
         <div id="friendsPicker" class="disc-friends" style="display: none;"></div>
       </div>
 
-      <div class="disc-legend">
-        <div><span class="dot mine"></span>your memories</div>
-        <div><span class="dot other"></span>others'</div>
-        <div><span class="dot halo"></span>shared song</div>
-      </div>
+      <div class="disc-legend" id="discLegend"></div>
 
-      <div class="disc-hint">
-        drag · scroll · hover · click · cluster labels are <b>clickable rooms</b>
+      <div class="disc-hint" id="discHint">
+        drag · scroll · hover · click · feeling dots are <b>clickable rooms</b>
       </div>
 
       <div id="discTip" class="disc-tip"></div>
@@ -654,6 +650,7 @@ export async function renderDiscovery(root) {
   const canvas   = root.querySelector('#discCanvas');
   const tip      = root.querySelector('#discTip');
   const labelsEl = root.querySelector('#discLabels');
+  const legendEl = root.querySelector('#discLegend');
   const status   = root.querySelector('#discoveryStatus');
   const explainEl = root.querySelector('#sigExplain');
   const friendsPicker = root.querySelector('#friendsPicker');
@@ -728,51 +725,86 @@ export async function renderDiscovery(root) {
     setStatus(`${memories.length} memories`);
   } catch (e) { setStatus(`Layout failed: ${e.message}`); return; }
 
-  // Friends layout — only computed when needed (cached).
+  // Friends layout — only computed when needed.
   let friendsLayout = null;
-  let friendsMemoriesCache = null;
   function getFriendsLayout(selectedFriendUids) {
     const eligible = new Set([myUid, ...selectedFriendUids]);
     const subset = memories.filter((m) => eligible.has(m.uid));
     if (subset.length < 2) {
       const map = new Map();
       subset.forEach((m) => map.set(m.id, [0, 0, 0]));
-      return { map, subsetIds: new Set(subset.map((m) => m.id)) };
+      return { map, genres: [], subsetIds: new Set(subset.map((m) => m.id)) };
     }
-    const map = computeFriendsLayout(subset);
-    friendsMemoriesCache = subset;
-    return { map, subsetIds: new Set(subset.map((m) => m.id)) };
+    const { map, genres } = computeFriendsLayout(subset);
+    return { map, genres, subsetIds: new Set(subset.map((m) => m.id)) };
   }
 
   // ---- build points objects ----
   const N = memories.length;
   const positions = new Float32Array(N * 3);
-  const visibleFlags = new Float32Array(N).fill(1); // 1 = visible, 0 = hidden (Friends mode subset)
+  const visibleFlags = new Float32Array(N).fill(1);
 
-  // Two groups: mine (red, larger) + others (ink, smaller).
   const mineIdxs = [];
   const otherIdxs = [];
   memories.forEach((m, i) => (m.uid === myUid ? mineIdxs : otherIdxs).push(i));
 
-  const COLOR_MINE  = new THREE.Color(0xd94f3c);
-  const COLOR_OTHER = new THREE.Color(0x222222);
-  const COLOR_HALO  = new THREE.Color(0xc89a2e);
+  // Base solid colors (used in sound + friends modes); feels mode swaps to
+  // per-cluster colors via the vertex-color attribute.
+  const BASE_MINE  = [0xd9 / 255, 0x4f / 255, 0x3c / 255];
+  const BASE_OTHER = [0x22 / 255, 0x22 / 255, 0x22 / 255];
 
-  function makePoints(subsetIdxs, { size, color, opacity }) {
+  function hexToRgbArr(hex) {
+    const h = hex.replace('#', '');
+    return [
+      parseInt(h.slice(0, 2), 16) / 255,
+      parseInt(h.slice(2, 4), 16) / 255,
+      parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+
+  // Always-vertexColor Points so we can swap palettes per mode without
+  // rebuilding geometry.
+  function makePoints(subsetIdxs, { size, opacity }) {
     const k = subsetIdxs.length;
     const pos = new Float32Array(k * 3);
+    const col = new Float32Array(k * 3).fill(1);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color',    new THREE.BufferAttribute(col, 3));
     const pts = new THREE.Points(g, new THREE.PointsMaterial({
-      size, sizeAttenuation: true, color, transparent: true, opacity
+      size, sizeAttenuation: true, vertexColors: true, transparent: true, opacity
     }));
     pts.frustumCulled = false;
     scene.add(pts);
     return { pts, geom: g, idxs: subsetIdxs };
   }
 
-  const othersObj = makePoints(otherIdxs, { size: 0.22, color: COLOR_OTHER, opacity: 0.75 });
-  const mineObj   = makePoints(mineIdxs,  { size: 0.50, color: COLOR_MINE,  opacity: 1.0 });
+  const othersObj = makePoints(otherIdxs, { size: 0.22, opacity: 0.85 });
+  const mineObj   = makePoints(mineIdxs,  { size: 0.50, opacity: 1.0 });
+
+  function paintColors(mode) {
+    function paint(obj, baseRGB) {
+      const arr = obj.geom.attributes.color.array;
+      for (let k = 0; k < obj.idxs.length; k++) {
+        const i = obj.idxs[k];
+        let rgb;
+        if (mode === 'feels') {
+          const cIdx = layouts.feelsMembership.get(memories[i].id);
+          const hex  = layouts.feelsClusters[cIdx]?.color || '#888888';
+          rgb = hexToRgbArr(hex);
+        } else {
+          rgb = baseRGB;
+        }
+        arr[k * 3]     = rgb[0];
+        arr[k * 3 + 1] = rgb[1];
+        arr[k * 3 + 2] = rgb[2];
+      }
+      obj.geom.attributes.color.needsUpdate = true;
+    }
+    paint(mineObj,   BASE_MINE);
+    paint(othersObj, BASE_OTHER);
+  }
+  const COLOR_HALO = new THREE.Color(0xc89a2e);
 
   // Crossings — gold halos around MY songs that others have also logged.
   const usersBySong = new Map();
@@ -808,7 +840,7 @@ export async function renderDiscovery(root) {
     currentMode = name;
     let map;
     if (name === 'sound')   map = layouts.sound;
-    if (name === 'social')  map = layouts.social;
+    if (name === 'feels')   map = layouts.feels;
     if (name === 'friends') {
       const sel = currentFriendSelection();
       friendsLayout = getFriendsLayout(sel);
@@ -827,6 +859,8 @@ export async function renderDiscovery(root) {
       if (!currentPos.has(m.id)) currentPos.set(m.id, { x: c[0], y: c[1], z: c[2] });
     }
 
+    paintColors(name);
+    renderLegend(name);
     renderClusterLabels();
   }
 
@@ -858,9 +892,9 @@ export async function renderDiscovery(root) {
 
   // ---- explain panel ----
   const EXPLAIN = {
-    sound: `<b>Sound</b> — every star is a memory, placed by the <i>genre fingerprint</i> of its song. UMAP projects that high-dimensional vector to 3D so memories with similar-sounding music land near each other. Compares: artist genres from Spotify + artist-id fallbacks.`,
-    social: `<b>Social</b> — clusters are <i>feelings</i>, not people. We send each memory's note to an LLM (openai/gpt-5-structured) and pull the top 10 feelings. Memories drift toward whichever feeling-cluster they share most. <b>Click a feeling label</b> to enter that room and chat with people in the same moment.`,
-    friends: `<b>Me &amp; Friends</b> — same Sound projection, but restricted to you + the friends you tick on the left. Useful for comparing taste with specific people instead of the whole site.`
+    sound:   `<b>Sound</b> — stars are placed by <i>genre fingerprint</i>. Italic labels mark each genre's centroid: the closer a star sits to a label, the more strongly that genre matches the song.`,
+    feels:   `<b>Feels</b> — clusters are <i>feelings</i>, not people. We send each memory's note to an LLM (openai/gpt-5-structured) and pull the top 10 feelings. Each cluster has its own color; <b>hover a colored dot</b> to see the feeling, <b>click it</b> to enter that room and chat with people in the same moment.`,
+    friends: `<b>Me &amp; Friends</b> — the Sound projection restricted to you + the friends you tick on the left. Genre labels are recomputed for just this subset, so you can see where your tastes overlap or diverge.`
   };
   function setExplain(name) {
     explainEl.innerHTML = EXPLAIN[name];
@@ -871,45 +905,90 @@ export async function renderDiscovery(root) {
   setExplain('sound');
 
   const btnSound   = root.querySelector('#sigSound');
-  const btnSocial  = root.querySelector('#sigSocial');
+  const btnFeels   = root.querySelector('#sigFeels');
   const btnFriends = root.querySelector('#sigFriends');
   function activate(name) {
     btnSound.classList.toggle('active',   name === 'sound');
-    btnSocial.classList.toggle('active',  name === 'social');
+    btnFeels.classList.toggle('active',   name === 'feels');
     btnFriends.classList.toggle('active', name === 'friends');
     applyLayout(name);
     setExplain(name);
   }
   btnSound.onclick   = () => activate('sound');
-  btnSocial.onclick  = () => activate('social');
+  btnFeels.onclick   = () => activate('feels');
   btnFriends.onclick = () => activate('friends');
 
-  // ---- cluster labels (Social view only) ----
-  function renderClusterLabels() {
-    if (currentMode !== 'social' || !layouts.socialClusters?.length) {
-      labelsEl.innerHTML = '';
-      return;
+  // ---- legend (per mode) ----
+  function renderLegend(name) {
+    if (name === 'feels') {
+      const items = (layouts.feelsClusters || []).map((c) =>
+        `<span class="legend-chip"><span class="legend-swatch" style="background:${c.color}"></span>${esc(c.feeling)}</span>`
+      ).join('');
+      legendEl.innerHTML = `<div class="legend-title">FEELING CLUSTERS</div><div class="legend-row">${items}</div>`;
+    } else {
+      legendEl.innerHTML = `
+        <div class="legend-row">
+          <span class="legend-chip"><span class="legend-swatch" style="background:#d94f3c"></span>your memories</span>
+          <span class="legend-chip"><span class="legend-swatch" style="background:#222"></span>everyone else</span>
+          <span class="legend-chip"><span class="legend-swatch" style="background:#c89a2e"></span>shared songs</span>
+        </div>`;
     }
-    labelsEl.innerHTML = layouts.socialClusters.map((c) =>
-      `<a class="cluster-label" data-feeling="${esc(c.feeling)}" href="#/room/${encodeURIComponent(c.feeling)}">
-         <span class="cluster-dot"></span>${esc(c.feeling).toUpperCase()}
-       </a>`
-    ).join('');
+  }
+
+  // ---- floating labels: feeling-cluster dots OR genre side-labels ----
+  //  Two distinct anchor types live in #discLabels:
+  //    .cluster-dot-anchor — small colored circle (Feels view), click → room
+  //    .genre-label        — italic genre name at centroid (Sound + Friends)
+  //  We rebuild on mode change, then re-project positions every frame.
+  function activeGenreLabels() {
+    if (currentMode === 'sound')   return layouts.soundGenres || [];
+    if (currentMode === 'friends') return friendsLayout?.genres || [];
+    return [];
+  }
+
+  function renderClusterLabels() {
+    if (currentMode === 'feels') {
+      const cs = layouts.feelsClusters || [];
+      labelsEl.innerHTML = cs.map((c) => `
+        <a class="cluster-dot-anchor" href="#/room/${encodeURIComponent(c.feeling)}"
+           style="--dot:${c.color}" title="${esc(c.feeling)}">
+          <span class="dot"></span>
+          <span class="tip">${esc(c.feeling).toUpperCase()}</span>
+        </a>`).join('');
+    } else {
+      const gs = activeGenreLabels();
+      labelsEl.innerHTML = gs.map((g) =>
+        `<span class="genre-label">${esc(g.genre)}</span>`
+      ).join('');
+    }
   }
 
   function projectClusterPositions() {
-    if (currentMode !== 'social' || !layouts.socialClusters?.length) return;
-    const labels = labelsEl.querySelectorAll('.cluster-label');
-    layouts.socialClusters.forEach((c, i) => {
-      const v = new THREE.Vector3(c.x, c.y, c.z).project(camera);
-      const x = (v.x *  0.5 + 0.5) * w();
-      const y = (-v.y * 0.5 + 0.5) * h();
-      const el = labels[i];
-      if (!el) return;
-      const inFront = v.z < 1;
-      el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
-      el.style.opacity = inFront ? '1' : '0';
-    });
+    if (currentMode === 'feels') {
+      const cs = layouts.feelsClusters || [];
+      const els = labelsEl.querySelectorAll('.cluster-dot-anchor');
+      cs.forEach((c, i) => {
+        const el = els[i]; if (!el) return;
+        const v = new THREE.Vector3(c.x, c.y, c.z).project(camera);
+        const inFront = v.z < 1;
+        const x = (v.x *  0.5 + 0.5) * w();
+        const y = (-v.y * 0.5 + 0.5) * h();
+        el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+        el.style.opacity   = inFront ? '1' : '0';
+      });
+    } else {
+      const gs = activeGenreLabels();
+      const els = labelsEl.querySelectorAll('.genre-label');
+      gs.forEach((g, i) => {
+        const el = els[i]; if (!el) return;
+        const v = new THREE.Vector3(g.x, g.y, g.z).project(camera);
+        const inFront = v.z < 1;
+        const x = (v.x *  0.5 + 0.5) * w();
+        const y = (-v.y * 0.5 + 0.5) * h();
+        el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%)`;
+        el.style.opacity   = inFront ? '0.95' : '0';
+      });
+    }
   }
 
   // ---- raycaster for hover/click ----
