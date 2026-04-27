@@ -766,11 +766,20 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
 /* Dynamic legend: one row of labeled swatches; populated per mode. */
 .disc-legend .legend-title {
   font-family: var(--font-display);
-  font-size: 0.62rem;
-  letter-spacing: 0.18em;
-  color: var(--ink-soft);
-  margin-bottom: 0.35rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.22em;
+  color: var(--ink);
+  font-weight: 700;
+  margin-bottom: 0.2rem;
   text-transform: uppercase;
+}
+.disc-legend .legend-sub {
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  margin-bottom: 0.5rem;
+  font-style: italic;
+  max-width: 280px;
+  line-height: 1.35;
 }
 .disc-legend .legend-row {
   display: flex; flex-wrap: wrap; gap: 0.5rem 0.85rem;
@@ -836,6 +845,23 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
 }
 .room-card .artist { color: var(--ink-dim); font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .room-card .author { color: var(--ink-soft); font-size: 0.72rem; margin-top: 0.2rem; }
+.room-card { position: relative; }
+.room-card-badge {
+  display: inline-block;
+  background: var(--ink); color: var(--bg-elev);
+  font-family: var(--font-display);
+  font-size: 0.65rem; letter-spacing: 0.08em;
+  padding: 1px 6px; border-radius: 999px;
+  vertical-align: middle; margin-left: 0.35rem;
+}
+.room-card-rank {
+  position: absolute;
+  top: -8px; left: 8px;
+  background: var(--accent, #d94f3c); color: #fff;
+  font-family: var(--font-display);
+  font-size: 0.58rem; letter-spacing: 0.18em;
+  padding: 2px 6px; border-radius: 3px;
+}
 
 .room-chat {
   position: sticky;

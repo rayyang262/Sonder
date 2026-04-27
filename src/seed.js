@@ -38,41 +38,75 @@ const FIRST_NAMES = [
   'Dax', 'Esme', 'Hugo', 'Pia', 'Quill', 'Sade', 'Tova', 'Yara', 'Zane', 'Nia'
 ];
 
-// 30-song pool. Each entry includes a curated feeling that maps to one of the
-// DEFAULT_FEELINGS clusters in umap.js, plus a one-line note seed and an
-// image-prompt scaffold. Songs repeat across users on purpose — that's how
-// "shared songs" gold halos appear in Discovery.
+// 30-song pool. Each entry has only the search query + a curated feeling
+// (the cluster anchor for that song). NOTES + IMAGE PROMPTS are generated
+// PER MEMORY below, not per song — so two users sharing a song still get
+// different scenes and different AI photos.
 const SONG_POOL = [
-  { q: 'Mitski Nobody',                              feel: 'lonely',     note: 'walking home alone after the party',       img: 'a person walking down an empty city street at 2am, soft streetlights, cinematic film grain' },
-  { q: 'Phoebe Bridgers Motion Sickness',            feel: 'heartbroken',note: 'the week after we stopped texting',         img: 'a quiet bedroom with rumpled sheets, late afternoon light, melancholic, film photography' },
-  { q: 'Bon Iver Holocene',                          feel: 'nostalgic',  note: 'snow on the windshield driving home',       img: 'a snowy mountain road through a windshield, soft winter light, nostalgic, film photo' },
-  { q: 'Frank Ocean Nights',                         feel: 'tender',     note: 'late drives with my best friend',           img: 'two friends in a car at night, dashboard glow, warm, intimate, film photo' },
-  { q: 'Kendrick Lamar HUMBLE',                      feel: 'energized',  note: 'gym at 6am before everything started',      img: 'a sunlit gym window in the morning, dust in the air, motivational, film photo' },
-  { q: 'Tyler, The Creator EARFQUAKE',               feel: 'euphoric',   note: 'hit different on the rooftop',              img: 'a rooftop party at golden hour, friends laughing, lens flare, film photo' },
-  { q: 'Clairo Pretty Girl',                         feel: 'tender',     note: 'getting ready in the mirror',               img: 'a vanity mirror surrounded by warm bulbs, soft pastel light, intimate, film photo' },
-  { q: 'Beabadoobee Coffee',                         feel: 'calm',       note: 'sunday morning, no plans',                  img: 'a steaming coffee cup on a windowsill, gentle morning light, calm, film photo' },
-  { q: 'Sufjan Stevens Mystery of Love',             feel: 'tender',     note: 'first kiss on the beach',                   img: 'two silhouettes on a quiet beach at dusk, romantic, soft pastels, film photo' },
-  { q: 'Big Thief Not',                              feel: 'rage',       note: 'screamed it driving back from work',        img: 'a long highway at dusk through a car window, raw emotion, film photo' },
-  { q: 'Fleet Foxes White Winter Hymnal',            feel: 'nostalgic',  note: 'kindergarten memories somehow',              img: 'a snow-covered playground at dawn, nostalgic, soft cool light, film photo' },
-  { q: 'Charli XCX Vroom Vroom',                     feel: 'euphoric',   note: 'pre-game in the dorm bathroom',             img: 'neon-lit bathroom mirror selfies, vibrant, film photo, after-hours' },
-  { q: '100 gecs money machine',                     feel: 'rage',       note: 'screaming in the car at 1am',               img: 'red and purple neon lights blurring past a car window, chaotic energy, film photo' },
-  { q: 'SOPHIE Immaterial',                          feel: 'euphoric',   note: 'dancing in the kitchen alone',              img: 'a young person dancing in a softly lit kitchen, joyful, film photo' },
-  { q: 'Miles Davis So What',                        feel: 'calm',       note: 'sunday afternoon with the cat',             img: 'a sunlit living room with vinyl player, cat sleeping on couch, film photo' },
-  { q: 'John Coltrane Naima',                        feel: 'tender',     note: 'long quiet evening',                        img: 'a single floor lamp lighting a wooden room at night, contemplative, film photo' },
-  { q: 'Chet Baker My Funny Valentine',              feel: 'melancholy', note: 'the apartment after she left',              img: 'an empty kitchen with two coffee cups, soft morning light, film photo' },
-  { q: 'Bill Evans Peace Piece',                     feel: 'calm',       note: 'rainy window in the studio',                img: 'rain on a window, a record player out of focus, melancholic peace, film photo' },
-  { q: 'Debussy Clair de Lune',                      feel: 'melancholy', note: 'walking through the museum alone',          img: 'a long museum hall with sun streaming through tall windows, solitary figure, film photo' },
-  { q: 'Erik Satie Gymnopedie No 1',                 feel: 'melancholy', note: 'studying for the final',                    img: 'a desk lamp on a stack of notes at 2am, soft warm tones, film photo' },
-  { q: 'Max Richter On the Nature of Daylight',      feel: 'heartbroken',note: 'the funeral',                                img: 'an empty wooden chapel with sunlight through stained glass, somber, film photo' },
-  { q: 'Ludovico Einaudi Nuvole Bianche',            feel: 'hopeful',    note: 'first morning of the trip',                  img: 'a wide view of mountains at dawn, hopeful, soft pastel, film photo' },
-  { q: 'Rex Orange County Loving Is Easy',           feel: 'hopeful',    note: 'walking to her place',                       img: 'a sunlit suburban sidewalk in spring, blossom petals, hopeful, film photo' },
-  { q: 'Cuco Lo Que Siento',                         feel: 'tender',     note: 'beach trip after graduation',               img: 'a beach bonfire at twilight, friends silhouetted, warm, film photo' },
-  { q: 'Travis Scott SICKO MODE',                    feel: 'energized',  note: 'pre-game lockerroom',                       img: 'a dim locker room with one shaft of overhead light, intense, film photo' },
-  { q: 'JID Surround Sound',                         feel: 'energized',  note: 'first day of the new job',                  img: 'a sunny morning subway platform, motion blur, focused, film photo' },
-  { q: 'Julien Baker Appointments',                  feel: 'lonely',     note: 'therapy waiting room',                       img: 'a beige waiting room chair with afternoon sun on the carpet, melancholic, film photo' },
-  { q: 'Philip Glass Metamorphosis Two',             feel: 'melancholy', note: 'long train ride upstate',                   img: 'a train window with rolling hills passing in autumn, contemplative, film photo' },
-  { q: 'Chopin Nocturne Op 9 No 2',                  feel: 'melancholy', note: 'rainy night studying alone',                img: 'a lamp-lit desk near a rainy window at night, peaceful loneliness, film photo' },
-  { q: 'Kanye West Runaway',                         feel: 'heartbroken',note: 'the night I knew it was over',              img: 'a lone figure at a piano in a vast empty room, dramatic, film photo' }
+  { q: 'Mitski Nobody',                          feel: 'lonely' },
+  { q: 'Phoebe Bridgers Motion Sickness',        feel: 'heartbroken' },
+  { q: 'Bon Iver Holocene',                      feel: 'nostalgic' },
+  { q: 'Frank Ocean Nights',                     feel: 'tender' },
+  { q: 'Kendrick Lamar HUMBLE',                  feel: 'energized' },
+  { q: 'Tyler, The Creator EARFQUAKE',           feel: 'euphoric' },
+  { q: 'Clairo Pretty Girl',                     feel: 'tender' },
+  { q: 'Beabadoobee Coffee',                     feel: 'calm' },
+  { q: 'Sufjan Stevens Mystery of Love',         feel: 'tender' },
+  { q: 'Big Thief Not',                          feel: 'rage' },
+  { q: 'Fleet Foxes White Winter Hymnal',        feel: 'nostalgic' },
+  { q: 'Charli XCX Vroom Vroom',                 feel: 'euphoric' },
+  { q: '100 gecs money machine',                 feel: 'rage' },
+  { q: 'SOPHIE Immaterial',                      feel: 'euphoric' },
+  { q: 'Miles Davis So What',                    feel: 'calm' },
+  { q: 'John Coltrane Naima',                    feel: 'tender' },
+  { q: 'Chet Baker My Funny Valentine',          feel: 'melancholy' },
+  { q: 'Bill Evans Peace Piece',                 feel: 'calm' },
+  { q: 'Debussy Clair de Lune',                  feel: 'melancholy' },
+  { q: 'Erik Satie Gymnopedie No 1',             feel: 'melancholy' },
+  { q: 'Max Richter On the Nature of Daylight',  feel: 'heartbroken' },
+  { q: 'Ludovico Einaudi Nuvole Bianche',        feel: 'hopeful' },
+  { q: 'Rex Orange County Loving Is Easy',       feel: 'hopeful' },
+  { q: 'Cuco Lo Que Siento',                     feel: 'tender' },
+  { q: 'Travis Scott SICKO MODE',                feel: 'energized' },
+  { q: 'JID Surround Sound',                     feel: 'energized' },
+  { q: 'Julien Baker Appointments',              feel: 'lonely' },
+  { q: 'Philip Glass Metamorphosis Two',         feel: 'melancholy' },
+  { q: 'Chopin Nocturne Op 9 No 2',              feel: 'melancholy' },
+  { q: 'Kanye West Runaway',                     feel: 'heartbroken' }
+];
+
+// ---- Per-memory composition palette (mixed at write time so each of the
+// 150 memories gets a unique scenario, image prompt, and note) -----------
+const SCENES_BY_FEELING = {
+  lonely:      ['walking home from a party that ended too early', 'sitting on the fire escape at 3am', 'the empty subway car after midnight', 'a hotel room in a city you don\'t know', 'staring at the ceiling fan', 'an empty diner booth', 'parking lot after the show', 'an unmade bed at noon'],
+  heartbroken: ['the week after the breakup', 'their hoodie still on the chair', 'their last text unread', 'a half-empty bottle of wine', 'driving past their old block', 'cleaning out the desk drawer', 'crying in the bathroom at work', 'their playlist still saved'],
+  nostalgic:   ['the basement at my parents\' house', 'an old polaroid on the fridge', 'driving past my high school', 'the first apartment with three friends', 'a dusty cassette tape', 'the backseat of a Honda Civic', 'summer at the lake house', 'walking through campus alone'],
+  tender:      ['making breakfast for two', 'her hand on the steering wheel', 'falling asleep on the couch', 'sharing earbuds on the train', 'first slow dance', 'sunday morning, no plans', 'reading in the same room', 'your dog asleep on your chest'],
+  euphoric:    ['the drop hit at 2am', 'rooftop party as the sun came up', 'sprinting down the boardwalk', 'top down on the PCH', 'pre-game in the dorm bathroom', 'finding strangers who knew the song', 'the encore', 'driving with the windows down'],
+  melancholy:  ['rainy window in the studio', 'museum on a tuesday afternoon', 'long train ride upstate', 'staring at the bay alone', 'old letters from a desk drawer', 'walking through the cemetery', 'a half-finished painting', 'the apartment in winter'],
+  calm:        ['sunday morning, no plans', 'a steaming cup of tea by the window', 'reading on a hammock', 'making soup from scratch', 'the cat asleep in a sunbeam', 'first snowfall of the year', 'a bath at the end of the week', 'an early walk before the city woke up'],
+  hopeful:     ['the first morning of the trip', 'walking to her place in spring', 'the day I got the news', 'first day at the new job', 'sunrise after the all-nighter', 'opening the acceptance letter', 'first snow of the year', 'graduation morning'],
+  energized:   ['gym at 6am before everything started', 'first night out after finals', 'pre-show in the green room', 'sprint workout on the track', 'pre-game in the locker room', 'closing shift kitchen rush', 'studio at 2am working on the verse', 'race day morning'],
+  rage:        ['screamed it driving back from work', 'after the fight with my dad', 'parking lot after I got fired', 'kicking a wall in the alley', 'midnight in the practice room', 'punching the bag at the gym', 'pacing the apartment', 'driving 95 on the interstate']
+};
+
+const NOTE_OPENERS = ['', 'i remember ', 'this song was ', 'kept replaying it ', 'somehow this hit during ', 'on loop while ', 'literally the soundtrack to '];
+const NOTE_CLOSERS = ['', ' — felt every word', '. couldn\'t stop crying', '. don\'t know why it stuck', '. weirdly perfect', '. on repeat all month', '. still think about that night', ''];
+
+// Photographic style fragments combined into the AI image prompt for variety.
+const PHOTO_STYLES = [
+  '35mm film photo', 'polaroid', 'medium-format film', 'kodak portra 400',
+  'cinemagraph still', 'fujifilm superia', 'disposable camera flash',
+  'tungsten film', 'cinéma vérité still', 'super 8 frame'
+];
+const PHOTO_LIGHTS = [
+  'golden hour', 'blue hour', '3am', 'overcast afternoon', 'rainy window light',
+  'neon-lit night', 'soft tungsten lamp', 'fluorescent bathroom', 'dawn fog',
+  'fluorescent subway car'
+];
+const PHOTO_MOODS = [
+  'cinematic', 'intimate', 'lonely', 'grainy', 'dreamy',
+  'documentary', 'unposed', 'quiet', 'tender', 'pensive'
 ];
 
 const COMMENT_POOL = [
@@ -141,14 +175,23 @@ export async function seedAll(onProgress = () => {}) {
   }
 
   // 3) Build the planned memory list (50 × 3 = 150). Pick songs randomly per user,
-  //    no repeats within a single user. Carry feeling + image prompt + note seed.
+  //    no repeats within a single user. Each memory composes its OWN unique
+  //    scene/note/image-prompt — songs may repeat across users but the experience
+  //    on top of them is always different.
   const plan = [];
+  let memSeq = 0;
   for (const u of SEED_USERS) {
     const songs = pickN(SONG_POOL, 3);
     for (const s of songs) {
       const hit = resolved.get(s.q);
       if (!hit) continue;
-      plan.push({ user: u, song: hit, feeling: s.feel, noteBase: s.note, imgPrompt: s.img });
+      const scene    = pick(SCENES_BY_FEELING[s.feel] || SCENES_BY_FEELING.calm);
+      const note     = `${pick(NOTE_OPENERS)}${scene}${pick(NOTE_CLOSERS)}`.trim();
+      // Memory-unique image prompt: mix style + light + mood + scene + a numeric
+      // tag so the IMAGE_CACHE can never collide with another memory's prompt.
+      const imgPrompt = `${pick(PHOTO_STYLES)}, ${pick(PHOTO_MOODS)}, ${scene}, ${pick(PHOTO_LIGHTS)}, no text, no watermark, no logos, candid, --ref-${memSeq}`;
+      plan.push({ user: u, song: hit, feeling: s.feel, note, imgPrompt });
+      memSeq++;
     }
   }
 
@@ -191,7 +234,7 @@ export async function seedAll(onProgress = () => {}) {
         authorName:  p.user.name,
         authorEmail: p.user.email,
         song:        p.song,
-        note:        p.noteBase,
+        note:        p.note,
         location:    pick(LOCATIONS),
         photoUrl,
         date:        randomDate(),

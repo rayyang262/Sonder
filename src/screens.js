@@ -925,9 +925,17 @@ export async function renderDiscovery(root) {
       const items = (layouts.feelsClusters || []).map((c) =>
         `<span class="legend-chip"><span class="legend-swatch" style="background:${c.color}"></span>${esc(c.feeling)}</span>`
       ).join('');
-      legendEl.innerHTML = `<div class="legend-title">FEELING CLUSTERS</div><div class="legend-row">${items}</div>`;
-    } else {
       legendEl.innerHTML = `
+        <div class="legend-title">POSITIONED BY: FEELING</div>
+        <div class="legend-sub">extracted from each note via gpt-5 · color = cluster</div>
+        <div class="legend-row">${items}</div>`;
+    } else {
+      const title = name === 'sound'
+        ? 'POSITIONED BY: MUSIC GENRE'
+        : 'POSITIONED BY: GENRE (you + selected friends)';
+      legendEl.innerHTML = `
+        <div class="legend-title">${title}</div>
+        <div class="legend-sub">italic labels mark each genre's centroid · closer = stronger genre match</div>
         <div class="legend-row">
           <span class="legend-chip"><span class="legend-swatch" style="background:#d94f3c"></span>your memories</span>
           <span class="legend-chip"><span class="legend-swatch" style="background:#222"></span>everyone else</span>
@@ -1177,6 +1185,9 @@ export async function renderRoom(root, feeling) {
   `;
 
   // ---- grid of matching memories ----
+  // Dedupe by song.spotifyId so the same track from many users counts once;
+  // sort by popularity (number of users that logged it for this feeling),
+  // tiebreak by total resonance. Most-shared songs surface at the top.
   const grid = root.querySelector('#roomGrid');
   try {
     const all = await getPublicMemories();
@@ -1184,16 +1195,43 @@ export async function renderRoom(root, feeling) {
     if (matches.length === 0) {
       grid.innerHTML = `<div class="empty">No memories tagged "${esc(feeling)}" yet.</div>`;
     } else {
-      grid.innerHTML = matches.map((m) => `
-        <a class="room-card" href="#/memory/${esc(m.id)}">
-          ${m.song?.albumArt ? `<img src="${esc(m.song.albumArt)}" alt="" />` : '<div class="ph"></div>'}
-          <div class="room-card-info">
-            <div class="song">${esc(m.song?.name || 'Untitled')}</div>
-            <div class="artist">${esc((m.song?.artists || []).join(', '))}</div>
-            <div class="author">— ${esc(m.authorName || m.authorEmail || 'someone')}</div>
-          </div>
-        </a>
-      `).join('');
+      const groups = new Map();
+      for (const m of matches) {
+        const key = m.song?.spotifyId || `noid-${m.id}`;
+        if (!groups.has(key)) groups.set(key, { song: m.song, members: [], totalResonance: 0 });
+        const g = groups.get(key);
+        g.members.push(m);
+        g.totalResonance += (m.resonance || 0);
+      }
+      const items = [...groups.values()].map((g) => {
+        // Pick the highest-resonance member as the "rep" to link to.
+        const rep = [...g.members].sort((a, b) => (b.resonance || 0) - (a.resonance || 0))[0];
+        return {
+          song: g.song, rep,
+          count: g.members.length,
+          totalResonance: g.totalResonance,
+          authors: [...new Set(g.members.map((m) => m.authorName || m.authorEmail || 'someone'))]
+        };
+      });
+      items.sort((a, b) => (b.count - a.count) || (b.totalResonance - a.totalResonance));
+
+      grid.innerHTML = items.map((it, i) => {
+        const badge = it.count > 1 ? `<span class="room-card-badge">×${it.count}</span>` : '';
+        const tag   = i === 0 && it.count > 1 ? `<div class="room-card-rank">MOST SHARED</div>` : '';
+        const who   = it.count > 1
+          ? `${esc(it.authors.slice(0, 3).join(', '))}${it.authors.length > 3 ? ` +${it.authors.length - 3} more` : ''}`
+          : esc(it.authors[0]);
+        return `
+          <a class="room-card" href="#/memory/${esc(it.rep.id)}">
+            ${tag}
+            ${it.song?.albumArt ? `<img src="${esc(it.song.albumArt)}" alt="" />` : '<div class="ph"></div>'}
+            <div class="room-card-info">
+              <div class="song">${esc(it.song?.name || 'Untitled')} ${badge}</div>
+              <div class="artist">${esc((it.song?.artists || []).join(', '))}</div>
+              <div class="author">— ${who}</div>
+            </div>
+          </a>`;
+      }).join('');
     }
   } catch (e) {
     grid.innerHTML = `<div class="error">${esc(e.message)}</div>`;
