@@ -85,3 +85,52 @@ export async function extractFeelings(text) {
   FEELING_CACHE.set(trimmed, unique);
   return unique;
 }
+
+
+// ============================================================================
+//  generateImage(prompt) — flux-schnell via the same proxy.
+// ============================================================================
+//  Used by the demo seed for evocative "where the song was heard" photos.
+//  Returns an https URL on success, null on failure (caller falls back).
+// ============================================================================
+const IMAGE_CACHE = new Map();
+
+export async function generateImage(prompt) {
+  const trimmed = (prompt || '').trim();
+  if (!trimmed) return null;
+  if (IMAGE_CACHE.has(trimmed)) return IMAGE_CACHE.get(trimmed);
+
+  const body = {
+    model: 'black-forest-labs/flux-schnell',
+    input: {
+      prompt: trimmed,
+      num_outputs: 1,
+      aspect_ratio: '1:1',
+      output_format: 'jpg',
+      output_quality: 80
+    }
+  };
+
+  let res;
+  try {
+    res = await fetch(PROXY, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  } catch (e) { console.warn('[replicate-img] network error:', e.message); return null; }
+  if (!res.ok) { console.warn('[replicate-img] non-OK:', res.status); return null; }
+
+  let json;
+  try { json = await res.json(); } catch { return null; }
+
+  // flux-schnell returns output: 'url' or output: ['url', ...].
+  let out = json?.output;
+  if (Array.isArray(out)) out = out[0];
+  if (typeof out !== 'string' || !out.startsWith('http')) {
+    console.warn('[replicate-img] unexpected payload:', json);
+    return null;
+  }
+  IMAGE_CACHE.set(trimmed, out);
+  return out;
+}

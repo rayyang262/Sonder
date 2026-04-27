@@ -185,12 +185,10 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
    FEED — editorial vinyl layout (full-bleed, vinyl hanging 60% off left)
 ============================================================================ */
 .feed-page {
-  --vinyl-size: min(95vh, 900px);   /* diameter */
+  --vinyl-size: min(80vh, 760px);   /* diameter */
   --vinyl-off:  calc(var(--vinyl-size) * 0.6); /* how much hangs off-screen */
   position: relative;
   width: 100%;
-  min-height: calc(100vh - 60px);
-  overflow: hidden;
 }
 
 .feed-content {
@@ -230,9 +228,8 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
 
 .vinyl-wrap {
   position: absolute;
-  top: 50%;
+  top: 3rem;                /* anchored near top of feed-page → scrolls with content */
   left: calc(-1 * var(--vinyl-off));
-  transform: translateY(-50%);
   width: var(--vinyl-size);
   height: var(--vinyl-size);
   z-index: 0;
@@ -310,7 +307,7 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
 }
 .vinyl-time {
   position: absolute;
-  bottom: 1.5rem;
+  top: calc(3rem + var(--vinyl-size) + 0.75rem);
   /* place it just inside the visible sliver of the vinyl */
   left: calc(var(--vinyl-size) - var(--vinyl-off) - 5rem);
   font-family: var(--font-display);
@@ -367,10 +364,10 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
 
 .track {
   display: grid;
-  grid-template-columns: 32px 44px 1fr auto;
-  gap: 1rem;
+  grid-template-columns: 36px 64px 1fr auto;
+  gap: 1.1rem;
   align-items: center;
-  padding: 0.7rem 0.25rem;
+  padding: 1.1rem 0.25rem;
   border-bottom: 1px solid var(--line);
   cursor: pointer;
   transition: background 0.15s;
@@ -380,12 +377,12 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
 .track .num {
   font-family: var(--font-display);
   color: var(--ink-dim);
-  font-size: 0.85rem;
+  font-size: 1rem;
   letter-spacing: 0.05em;
 }
 .track .thumb {
-  width: 44px;
-  height: 44px;
+  width: 64px;
+  height: 64px;
   background: var(--bg-elev);
   border-radius: 2px;
   object-fit: cover;
@@ -394,19 +391,20 @@ button.toggle.active { background: var(--ink); border-color: var(--ink); color: 
 .track .info { min-width: 0; }  /* let children truncate instead of overflowing grid */
 .track .info .song {
   font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 0.95rem;
-  line-height: 1.2;
+  font-weight: 700;
+  font-size: 1.65rem;
+  line-height: 1.05;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .track .info .artist {
   color: var(--ink-dim);
-  font-size: 0.78rem;
-  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  margin-top: 0.25rem;
+  letter-spacing: 0.04em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

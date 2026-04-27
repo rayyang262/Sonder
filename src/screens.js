@@ -27,7 +27,7 @@ import { searchTracks, startLogin, isConnected, disconnect } from './spotify.js'
 import { fetchPreview } from './preview.js';
 import { extractFeelings } from './replicate.js';
 import { navigate } from './main.js';
-import { seedAll } from './seed.js';
+import { seedAll, clearSeedData } from './seed.js';
 import { computeLayouts, computeFriendsLayout } from './umap.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -213,9 +213,10 @@ export async function renderFeed(root) {
     return;
   }
 
-  const SHOWN = Math.min(12, memories.length);
-  list.innerHTML = memories.slice(0, SHOWN).map((m, i) => trackRow(m, i, currentUid)).join('');
-  viewMore.textContent = memories.length > SHOWN ? `— ${memories.length - SHOWN} more` : '';
+  const SHOWN = Math.min(10, memories.length);
+  memories = memories.slice(0, SHOWN);
+  list.innerHTML = memories.map((m, i) => trackRow(m, i, currentUid)).join('');
+  viewMore.textContent = '';
 
   setFocus(memories[0], 0, { autoplay: false });
 
@@ -1266,13 +1267,18 @@ export async function renderProfile(root) {
     <h2 style="margin-top: 2rem;">Your archive</h2>
     <div id="archive">Loading…</div>
 
-    <div class="card" style="border: 1px dashed var(--border); opacity: 0.8; margin-top: 2rem;">
-      <div class="meta">Dev tools</div>
+    <div class="card" style="border: 1px dashed var(--border); opacity: 0.9; margin-top: 2rem;">
+      <div class="meta">Dev tools — demo seed</div>
       <div style="color: var(--text-dim); font-size: 0.85rem; margin-bottom: 0.75rem;">
-        Seeds ~40 fake memories. Requires Spotify connected and Firestore test mode.
+        Generates 50 fake users × 3 memories (150 total) with AI-generated photos via Replicate,
+        cross-user +1s, and random comments. Requires Spotify connected. Takes ~10 minutes
+        the first time. Re-running clears the previous seed first.
       </div>
-      <button id="seedBtn" class="ghost" ${connected ? '' : 'disabled'}>Seed demo data</button>
-      <span id="seedStatus" style="color: var(--text-dim); margin-left: 1rem; font-size: 0.85rem;"></span>
+      <div style="display: flex; gap: 0.5rem;">
+        <button id="seedBtn" class="ghost" ${connected ? '' : 'disabled'}>Seed demo data</button>
+        <button id="clearSeedBtn" class="ghost">Clear seed data</button>
+      </div>
+      <div id="seedStatus" style="color: var(--text-dim); margin-top: 0.5rem; font-size: 0.85rem;"></div>
     </div>
 
     <button id="logout" class="ghost" style="margin-top: 2rem;">Sign out</button>
@@ -1360,15 +1366,34 @@ export async function renderProfile(root) {
   }
 
   // ---- seed ----
-  const seedBtn    = root.querySelector('#seedBtn');
-  const seedStatus = root.querySelector('#seedStatus');
+  const seedBtn      = root.querySelector('#seedBtn');
+  const clearSeedBtn = root.querySelector('#clearSeedBtn');
+  const seedStatus   = root.querySelector('#seedStatus');
   seedBtn.onclick = async () => {
     seedBtn.disabled = true;
+    clearSeedBtn.disabled = true;
     try {
-      await seedAll(({ done, total }) => { seedStatus.textContent = `${done}/${total}…`; });
-      seedStatus.textContent = 'Seeded. Check Discovery.';
+      await seedAll(({ stage, done, total }) => {
+        const label = stage === 'clear' ? 'wiping prior seed'
+                    : stage === 'spotify' ? 'resolving spotify songs'
+                    : 'writing memories + AI images';
+        seedStatus.textContent = `${label}: ${done}/${total}…`;
+      });
+      seedStatus.textContent = 'Seeded. Check Discovery + Feed.';
     } catch (e) { seedStatus.textContent = `Failed: ${e.message}`; }
-    finally { seedBtn.disabled = false; }
+    finally { seedBtn.disabled = false; clearSeedBtn.disabled = false; }
+  };
+  clearSeedBtn.onclick = async () => {
+    if (!confirm('Wipe ALL seeded memories and comments? This cannot be undone.')) return;
+    seedBtn.disabled = true;
+    clearSeedBtn.disabled = true;
+    try {
+      const { done, total } = await clearSeedData(({ done, total }) => {
+        seedStatus.textContent = `clearing: ${done}/${total}…`;
+      });
+      seedStatus.textContent = `Cleared ${done}/${total} seeded memories.`;
+    } catch (e) { seedStatus.textContent = `Failed: ${e.message}`; }
+    finally { seedBtn.disabled = false; clearSeedBtn.disabled = false; }
   };
 }
 

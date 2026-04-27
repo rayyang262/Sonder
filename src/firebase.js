@@ -229,18 +229,54 @@ export async function toggleResonance(memoryId) {
   }
 }
 
-// Seed-only.
-export async function createSeedMemory({ uid, authorName, authorEmail, song, note, location, date, isPublic = true, feelings = [] }) {
+// Seed-only — creates a memory under a fake uid, marked isSeed so we can
+// wipe it later. Accepts pre-baked feelings + photoUrl + likes.
+export async function createSeedMemory({
+  uid, authorName, authorEmail, song, note, location, photoUrl = null,
+  date, isPublic = true, feelings = [], resonance = 0, resonators = []
+}) {
   return addDoc(collection(db, 'memories'), {
     uid, authorName, authorEmail,
-    song, note, location,
-    photoUrl: null,
+    song, note, location, photoUrl,
     date, isPublic,
     feelings,
-    resonance: 0,
-    resonators: [],
+    resonance, resonators,
+    isSeed: true,
     createdAt: serverTimestamp()
   });
+}
+
+// Seed-only — adds a comment under a fake uid.
+export async function createSeedComment(memoryId, { uid, name, email, text }) {
+  return addDoc(collection(db, 'memories', memoryId, 'comments'), {
+    uid, name, email, text,
+    isSeed: true,
+    createdAt: serverTimestamp()
+  });
+}
+
+// Wipes everything created by ANY previous seed run (memories + comments).
+// Catches both new docs (isSeed:true) and legacy docs (uid starts with "seed-").
+export async function clearSeedData(onProgress = () => {}) {
+  // Fetch all memories — we filter client-side because Firestore can't do
+  // startsWith and the seed pool is small enough that this is fine.
+  const all = await getDocs(collection(db, 'memories'));
+  const targets = all.docs.filter((d) => {
+    const data = d.data();
+    return data.isSeed === true || (typeof data.uid === 'string' && data.uid.startsWith('seed-'));
+  });
+  const total = targets.length;
+  let done = 0;
+  for (const d of targets) {
+    try {
+      const cs = await getDocs(collection(db, 'memories', d.id, 'comments'));
+      await Promise.all(cs.docs.map((c) => deleteDoc(c.ref)));
+    } catch {}
+    try { await deleteDoc(d.ref); } catch {}
+    done++;
+    onProgress({ done, total });
+  }
+  return { done, total };
 }
 
 
